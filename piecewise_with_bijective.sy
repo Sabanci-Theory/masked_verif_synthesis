@@ -1,0 +1,60 @@
+(set-logic BV)
+
+; *** 1- configuration ***
+
+; w = ((x + r0) * r0) + r1
+(define-fun w ((x (_ BitVec 1)) (r0 (_ BitVec 1)) (r1 (_ BitVec 1))) (_ BitVec 1)
+  (bvxor r1 
+    (bvand r0
+      (bvxor x r0)
+    )
+  )
+)
+
+; *** 2- synthesis ***
+
+; f0 calculates the new r0
+; f1 calculates the new r1
+(synth-fun f0 ((x (_ BitVec 1)) (xp (_ BitVec 1)) (r0 (_ BitVec 1)) (r1 (_ BitVec 1))) (_ BitVec 1)
+  ((A (_ BitVec 1)))
+  ((A (_ BitVec 1) (x xp r0 r1 (bvxor A A) (bvand A A)))))
+
+(synth-fun f1 ((x (_ BitVec 1)) (xp (_ BitVec 1)) (r0 (_ BitVec 1)) (r1 (_ BitVec 1))) (_ BitVec 1)
+  ((A (_ BitVec 1)))
+  ((A (_ BitVec 1) (x xp r0 r1 (bvxor A A) (bvand A A)))))
+
+; *** 3- constraints ***
+
+; universally quantified variables
+(declare-var x (_ BitVec 1))
+(declare-var xp (_ BitVec 1))
+(declare-var r0 (_ BitVec 1))
+(declare-var r1 (_ BitVec 1))
+(declare-var r0_other (_ BitVec 1))
+(declare-var r1_other (_ BitVec 1))
+
+; invariance on x
+; w(x, r0, r1) = w(xp, f0(...), f1(...))
+(constraint 
+  (= 
+    (w x r0 r1) 
+    (w xp (f0 x xp r0 r1) (f1 x xp r0 r1))
+  )
+)
+
+; bijectivity of f = (f0, f1)
+; (f0(r) == f0(r') AND f1(r) == f1(r')) => (r0 == r0' AND r1 == r1')
+(constraint 
+  (=>
+    (and
+      (= (f0 x xp r0 r1) (f0 x xp r0_other r1_other))
+      (= (f1 x xp r0 r1) (f1 x xp r0_other r1_other))
+    )
+    (and
+      (= r0 r0_other)
+      (= r1 r1_other)
+    )
+  )
+)
+
+(check-synth)

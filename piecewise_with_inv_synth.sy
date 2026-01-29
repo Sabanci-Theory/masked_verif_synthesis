@@ -1,0 +1,65 @@
+(set-logic BV)
+
+; *** 1- configuration ***
+
+; w = ((x + r0) * r0) + r1
+(define-fun w ((x (_ BitVec 1)) (r0 (_ BitVec 1)) (r1 (_ BitVec 1))) (_ BitVec 1)
+  (bvxor r1 
+    (bvand r0
+      (bvxor x r0)
+    )
+  )
+)
+
+; *** 2- synthesis ***
+
+; f0 calculates the new r0
+; f1 calculates the new r1
+(synth-fun f0 ((x (_ BitVec 1)) (xp (_ BitVec 1)) (r0 (_ BitVec 1)) (r1 (_ BitVec 1))) (_ BitVec 1)
+  ((A (_ BitVec 1)))
+  ((A (_ BitVec 1) (x xp r0 r1 (bvxor A A) (bvand A A)))))
+
+(synth-fun f1 ((x (_ BitVec 1)) (xp (_ BitVec 1)) (r0 (_ BitVec 1)) (r1 (_ BitVec 1))) (_ BitVec 1)
+  ((A (_ BitVec 1)))
+  ((A (_ BitVec 1) (x xp r0 r1 (bvxor A A) (bvand A A)))))
+
+; g0 recovers the old r0
+; g1 recovers the old r1
+(synth-fun g0 ((x (_ BitVec 1)) (xp (_ BitVec 1)) (r0_new (_ BitVec 1)) (r1_new (_ BitVec 1))) (_ BitVec 1)
+  ((A (_ BitVec 1)))
+  ((A (_ BitVec 1) (x xp r0_new r1_new (bvxor A A) (bvand A A)))))
+
+(synth-fun g1 ((x (_ BitVec 1)) (xp (_ BitVec 1)) (r0_new (_ BitVec 1)) (r1_new (_ BitVec 1))) (_ BitVec 1)
+  ((A (_ BitVec 1)))
+  ((A (_ BitVec 1) (x xp r0_new r1_new (bvxor A A) (bvand A A)))))
+
+; *** 3- constraints ***
+
+; universally quantified variables
+(declare-var x (_ BitVec 1))
+(declare-var xp (_ BitVec 1))
+(declare-var r0 (_ BitVec 1))
+(declare-var r1 (_ BitVec 1))
+
+; invariance on x
+; w(x, r0, r1) = w(xp, f0(...), f1(...))
+(constraint 
+  (= 
+    (w x r0 r1) 
+    (w xp (f0 x xp r0 r1) (f1 x xp r0 r1))
+  )
+)
+
+; bijectivity of f = (f0, f1)
+; g0(x, xp, f0(x, xp, r0, r1), f1(x, xp, r0, r1)) = r0
+; g1(x, xp, f0(x, xp, r0, r1), f1(x, xp, r0, r1)) = r1
+(constraint 
+  (and
+    ; recover r0
+    (= (g0 x xp (f0 x xp r0 r1) (f1 x xp r0 r1)) r0)
+    ; recover r1
+    (= (g1 x xp (f0 x xp r0 r1) (f1 x xp r0 r1)) r1)
+  )
+)
+
+(check-synth)

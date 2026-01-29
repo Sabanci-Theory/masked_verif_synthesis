@@ -1,0 +1,65 @@
+(set-logic BV)
+
+(declare-datatypes ((Pair 2)) ((par (T1 T2) ((mk-pair (first T1) (second T2))))))
+
+; *** 1- configuration ***
+
+; w = ((x + r0) * r0) + r1
+(define-fun w ((x (_ BitVec 1)) (r (Pair (_ BitVec 1) (_ BitVec 1)))) (_ BitVec 1)
+  (bvxor (second r) 
+    (bvand (first r)
+      (bvxor x (first r))
+    )
+  )
+)
+
+; *** 2- synthesis ***
+
+; f calculates the new pair of r
+(synth-fun f ((x (_ BitVec 1)) (xp (_ BitVec 1)) (r (Pair (_ BitVec 1) (_ BitVec 1)))) 
+	(Pair (_ BitVec 1) (_ BitVec 1))
+  (
+    (P (Pair (_ BitVec 1) (_ BitVec 1)))
+    (B (_ BitVec 1))
+  )
+  (
+    (P (Pair (_ BitVec 1) (_ BitVec 1)) ((mk-pair B B)))
+    (B (_ BitVec 1) (x xp (first r) (second r) (bvxor B B) (bvand B B)))
+  )
+)
+
+; *** 3- constraints ***
+
+; universally quantified variables
+(declare-var x (_ BitVec 1))
+(declare-var xp (_ BitVec 1))
+(declare-var r (Pair (_ BitVec 1) (_ BitVec 1)))
+(declare-var r_one (Pair (_ BitVec 1) (_ BitVec 1)))
+(declare-var r_two (Pair (_ BitVec 1) (_ BitVec 1)))
+
+; invariance on x
+; w(x, r0, r1) = w(xp, f0(...), f1(...))
+(constraint 
+  (= 
+    (w x r) 
+    (w xp (f x xp r))
+  )
+)
+
+; bijectivity of f
+(constraint 
+  (=> 
+    (= (f x xp r_one) (f x xp r_two)) 
+    (= r_one r_two)
+  )
+)
+
+(check-synth)
+
+; f(x, xp, r0, r1) = r0, r1 + (r0 * (x + xp))
+; f                = r0, r0 * x + r0 * xp + r1
+
+; ((x + r0) * r0) + r1 = ((xp + r0) * r0) + r1 + (r0 * (x + xp))
+; x * r0 + r0 * r0 + r1 = xp * r0 + r0 * r0 + r1 + r0 * x + r0 * xp
+; x * r0 + r0 * r0 + r1 = r0 * r0 + r1 + r0 * x
+; magik
