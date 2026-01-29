@@ -47,7 +47,6 @@
 (declare-var x (_ BitVec 1))
 (declare-var xp (_ BitVec 1))
 (declare-var r (Pair (_ BitVec 1) (_ BitVec 1)))
-(declare-var r_one (Pair (_ BitVec 1) (_ BitVec 1)))
 
 ; invariance on x
 ; w(x, r) = w(xp, f(r))
@@ -61,10 +60,7 @@
 ; bijectivity of f
 ; g(x, xp, f(x, xp, r)) = r
 (constraint 
-  (=
-    (g x xp (f x xp r_one))
-    r_one
-  )
+  (= (g x xp (f x xp r)) r)
 )
 
 (check-synth)

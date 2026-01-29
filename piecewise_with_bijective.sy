@@ -16,12 +16,22 @@
 ; f0 calculates the new r0
 ; f1 calculates the new r1
 (synth-fun f0 ((x (_ BitVec 1)) (xp (_ BitVec 1)) (r0 (_ BitVec 1)) (r1 (_ BitVec 1))) (_ BitVec 1)
-  ((A (_ BitVec 1)))
-  ((A (_ BitVec 1) (x xp r0 r1 (bvxor A A) (bvand A A)))))
+  (
+    (B (_ BitVec 1))
+  )
+  (
+    (B (_ BitVec 1) (x xp r0 r1 (bvxor B B) (bvand B B)))
+  )
+)
 
 (synth-fun f1 ((x (_ BitVec 1)) (xp (_ BitVec 1)) (r0 (_ BitVec 1)) (r1 (_ BitVec 1))) (_ BitVec 1)
-  ((A (_ BitVec 1)))
-  ((A (_ BitVec 1) (x xp r0 r1 (bvxor A A) (bvand A A)))))
+  (
+    (B (_ BitVec 1))
+  )
+  (
+    (B (_ BitVec 1) (x xp r0 r1 (bvxor B B) (bvand B B)))
+  )
+)
 
 ; *** 3- constraints ***
 
@@ -30,8 +40,8 @@
 (declare-var xp (_ BitVec 1))
 (declare-var r0 (_ BitVec 1))
 (declare-var r1 (_ BitVec 1))
-(declare-var r0_other (_ BitVec 1))
-(declare-var r1_other (_ BitVec 1))
+(declare-var r0p (_ BitVec 1))
+(declare-var r1p (_ BitVec 1))
 
 ; invariance on x
 ; w(x, r0, r1) = w(xp, f0(...), f1(...))
@@ -47,12 +57,12 @@
 (constraint 
   (=>
     (and
-      (= (f0 x xp r0 r1) (f0 x xp r0_other r1_other))
-      (= (f1 x xp r0 r1) (f1 x xp r0_other r1_other))
+      (= (f0 x xp r0 r1) (f0 x xp r0p r1p))
+      (= (f1 x xp r0 r1) (f1 x xp r0p r1p))
     )
     (and
-      (= r0 r0_other)
-      (= r1 r1_other)
+      (= r0 r0p)
+      (= r1 r1p)
     )
   )
 )

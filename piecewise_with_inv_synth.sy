@@ -16,22 +16,42 @@
 ; f0 calculates the new r0
 ; f1 calculates the new r1
 (synth-fun f0 ((x (_ BitVec 1)) (xp (_ BitVec 1)) (r0 (_ BitVec 1)) (r1 (_ BitVec 1))) (_ BitVec 1)
-  ((A (_ BitVec 1)))
-  ((A (_ BitVec 1) (x xp r0 r1 (bvxor A A) (bvand A A)))))
+  (
+    (B (_ BitVec 1))
+  )
+  (
+    (B (_ BitVec 1) (x xp r0 r1 (bvxor B B) (bvand B B)))
+  )
+)
 
 (synth-fun f1 ((x (_ BitVec 1)) (xp (_ BitVec 1)) (r0 (_ BitVec 1)) (r1 (_ BitVec 1))) (_ BitVec 1)
-  ((A (_ BitVec 1)))
-  ((A (_ BitVec 1) (x xp r0 r1 (bvxor A A) (bvand A A)))))
+  (
+    (B (_ BitVec 1))
+  )
+  (
+    (B (_ BitVec 1) (x xp r0 r1 (bvxor B B) (bvand B B)))
+  )
+)
 
 ; g0 recovers the old r0
 ; g1 recovers the old r1
 (synth-fun g0 ((x (_ BitVec 1)) (xp (_ BitVec 1)) (r0_new (_ BitVec 1)) (r1_new (_ BitVec 1))) (_ BitVec 1)
-  ((A (_ BitVec 1)))
-  ((A (_ BitVec 1) (x xp r0_new r1_new (bvxor A A) (bvand A A)))))
+  (
+    (B (_ BitVec 1))
+  )
+  (
+    (B (_ BitVec 1) (x xp r0_new r1_new (bvxor B B) (bvand B B)))
+  )
+)
 
 (synth-fun g1 ((x (_ BitVec 1)) (xp (_ BitVec 1)) (r0_new (_ BitVec 1)) (r1_new (_ BitVec 1))) (_ BitVec 1)
-  ((A (_ BitVec 1)))
-  ((A (_ BitVec 1) (x xp r0_new r1_new (bvxor A A) (bvand A A)))))
+  (
+    (B (_ BitVec 1))
+  )
+  (
+    (B (_ BitVec 1) (x xp r0_new r1_new (bvxor B B) (bvand B B)))
+  )
+)
 
 ; *** 3- constraints ***
 
@@ -55,9 +75,7 @@
 ; g1(x, xp, f0(x, xp, r0, r1), f1(x, xp, r0, r1)) = r1
 (constraint 
   (and
-    ; recover r0
     (= (g0 x xp (f0 x xp r0 r1) (f1 x xp r0 r1)) r0)
-    ; recover r1
     (= (g1 x xp (f0 x xp r0 r1) (f1 x xp r0 r1)) r1)
   )
 )

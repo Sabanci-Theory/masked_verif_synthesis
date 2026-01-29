@@ -15,7 +15,7 @@
 
 ; *** 2- synthesis ***
 
-; f calculates the new pair of r
+; f calculates the new r pair
 (synth-fun f ((x (_ BitVec 1)) (xp (_ BitVec 1)) (r (Pair (_ BitVec 1) (_ BitVec 1)))) 
 	(Pair (_ BitVec 1) (_ BitVec 1))
   (
@@ -23,8 +23,8 @@
     (B (_ BitVec 1))
   )
   (
-    (P (Pair (_ BitVec 1) (_ BitVec 1)) ((mk-pair B B)))
-    (B (_ BitVec 1) (x xp (first r) (second r) (bvxor B B) (bvand B B)))
+    (P (Pair (_ BitVec 1) (_ BitVec 1)) ((mk-pair B B)))                        ; P :== (B, B)
+    (B (_ BitVec 1) (x xp (first r) (second r) (bvxor B B) (bvand B B)))        ; B :== x | xp | r0 | r1 | B + B | B * B
   )
 )
 
@@ -34,8 +34,7 @@
 (declare-var x (_ BitVec 1))
 (declare-var xp (_ BitVec 1))
 (declare-var r (Pair (_ BitVec 1) (_ BitVec 1)))
-(declare-var r_one (Pair (_ BitVec 1) (_ BitVec 1)))
-(declare-var r_two (Pair (_ BitVec 1) (_ BitVec 1)))
+(declare-var rp (Pair (_ BitVec 1) (_ BitVec 1)))
 
 ; invariance on x
 ; w(x, r0, r1) = w(xp, f0(...), f1(...))
@@ -49,8 +48,8 @@
 ; bijectivity of f
 (constraint 
   (=> 
-    (= (f x xp r_one) (f x xp r_two)) 
-    (= r_one r_two)
+    (= (f x xp r) (f x xp rp)) 
+    (= r rp)
   )
 )
 
@@ -62,4 +61,4 @@
 ; ((x + r0) * r0) + r1 = ((xp + r0) * r0) + r1 + (r0 * (x + xp))
 ; x * r0 + r0 * r0 + r1 = xp * r0 + r0 * r0 + r1 + r0 * x + r0 * xp
 ; x * r0 + r0 * r0 + r1 = r0 * r0 + r1 + r0 * x
-; magik
+; correct
