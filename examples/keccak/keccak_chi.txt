@@ -1,0 +1,76 @@
+proc NOT: (* !a *)
+  inputs: a = a0 + a1 + a2
+  outputs: d = d0 + d1 + d2;
+
+  d0 := ~a0;
+  d1 := a1;
+  d2 := a2;
+end
+
+proc DOM_AND: (* a * b *)
+  inputs: a = a0 + a1 + a2, b = b0 + b1 + b2
+  outputs: c = c0 + c1 + c2
+  randoms: r0, r1, r2;
+
+  t0 = ![a0*b1 + r0];
+  t1 = ![a0*b2 + r1];
+  c0 := a0*b0 + t0 + t1;
+
+  t2 = ![a1*b0 + r0];
+  t3 = ![a1*b2 + r2];
+  c1 := a1*b1 + t2 + t3;
+
+  t4 = ![a2*b0 + r1];
+  t5 = ![a2*b1 + r2];
+  c2 := a2*b2 + t4 + t5;
+end
+
+proc OR: (* a + b *)
+  inputs: a = a0 + a1 + a2, b = b0 + b1 + b2
+  outputs: c = c0 + c1 + c2;
+  
+  c0 := a0 + b0;
+  c1 := a1 + b1;
+  c2 := a2 + b2;
+end
+
+proc Ksbox1: (* a + !b*c *)
+  inputs: a = a0 + a1 + a2, b = b0 + b1 + b2, c = c0 + c1 + c2
+  outputs: d = d0 + d1 + d2
+  shares: nb= nb0 + nb1 + nb2, nbc = nbc0 + nbc1 + nbc2;
+
+  nb  = NOT(b);
+  nbc = DOM_AND(nb, c);
+  d   = OR(a, nbc);
+end 
+
+proc Ksbox: 
+  inputs: a = a0 + a1 + a2, b = b0 + b1 + b2, c = c0 + c1 + c2, 
+          d = d0 + d1 + d2, e = e0 + e1 + e2
+  outputs: f = f0 + f1 + f2, g = g0 + g1 + g2, h = h0 + h1 + h2, 
+           k = k0 + k1 + k2, l = l0 + l1 + l2;
+
+  f = Ksbox1(a,b,c);
+  g = Ksbox1(b,c,d);
+  h = Ksbox1(c,d,e);
+  k = Ksbox1(d,e,a);
+  l = Ksbox1(e,a,b);
+end 
+
+NI Ksbox
+
+(*
+proc T: 
+  inputs: a = a0 + a1 + a2, b = b0 + b1 + b2, c = c0 + c1 + c2, 
+          d = d0 + d1 + d2, e = e0 + e1 + e2
+  outputs: q[0:2]
+  shares: f = f0 + f1 + f2, g = g0 + g1 + g2, h = h0 + h1 + h2, 
+           k = k0 + k1 + k2, l = l0 + l1 + l2;
+
+
+  (f,g,h,k,l) = Ksbox(a,b,c,d,e);
+  q := f+g+h+k+l;
+end
+
+SNI T
+*)
