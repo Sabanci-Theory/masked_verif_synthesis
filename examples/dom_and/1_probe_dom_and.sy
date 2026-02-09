@@ -1,0 +1,55 @@
+(set-logic BV)
+
+(declare-datatypes ((Rands 3)) ((par (T1 T2 T3) ((mk-rands (r0 T1) (r1 T2) (r2 T3))))))
+
+; *** 1- configuration ***
+
+; w = [((b + r1) * r0) + r2] = [b * r0 + r1 * r0 + r2]
+(define-fun w ((a (_ BitVec 1)) (b (_ BitVec 1)) (r (Rands (_ BitVec 1) (_ BitVec 1) (_ BitVec 1)))) (_ BitVec 1)
+	(
+		bvand (bvxor b (r1 r)) (r0 r)
+	)
+)
+
+; *** 2- synthesis ***
+
+; f calculates the new r pair
+(synth-fun f ((a (_ BitVec 1)) (b (_ BitVec 1)) (ap (_ BitVec 1)) (bp (_ BitVec 1)) (r (Rands (_ BitVec 1) (_ BitVec 1) (_ BitVec 1))))
+  (Rands (_ BitVec 1) (_ BitVec 1) (_ BitVec 1))
+  (
+    (T (Rands (_ BitVec 1) (_ BitVec 1) (_ BitVec 1)))
+    (B (_ BitVec 1))
+  )
+  (
+    (T (Rands (_ BitVec 1) (_ BitVec 1) (_ BitVec 1)) ((mk-rands B B B)))											; T :== (B, B, B)
+    (B (_ BitVec 1) (#b0 #b1 a b ap bp (r0 r) (r1 r) (r2 r) (bvxor B B) (bvand B B)))        	; B :== 0 | 1 | a | b | ap | bp | r0 | r1 | r2 | B + B | B * B
+  )
+)
+
+; *** 3- constraints ***
+
+; universally quantified variables
+(declare-var a (_ BitVec 1))
+(declare-var b (_ BitVec 1))
+(declare-var r (Rands (_ BitVec 1) (_ BitVec 1) (_ BitVec 1)))
+(declare-var ap (_ BitVec 1))
+(declare-var bp (_ BitVec 1))
+(declare-var rp (Rands (_ BitVec 1) (_ BitVec 1) (_ BitVec 1)))
+
+; invariance on x
+(constraint 
+  (= 
+    (w a b r) 
+    (w ap bp (f a b ap bp r))
+  )
+)
+
+; bijectivity of f
+(constraint 
+  (=> 
+    (= (f a b ap bp r) (f a b ap bp rp)) 
+    (= r rp)
+  )
+)
+
+(check-synth)
