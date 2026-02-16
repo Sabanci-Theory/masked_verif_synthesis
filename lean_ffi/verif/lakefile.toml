@@ -8,3 +8,8 @@ name = "Verif"
 [[lean_exe]]
 name = "verif"
 root = "Main"
+
+[[require]]
+name = "cvc5"
+git = "https://github.com/abdoo8080/lean-cvc5.git"
+rev = "main"

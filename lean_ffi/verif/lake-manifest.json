@@ -1,5 +1,15 @@
 {"version": "1.1.0",
  "packagesDir": ".lake/packages",
- "packages": [],
+ "packages":
+ [{"url": "https://github.com/abdoo8080/lean-cvc5.git",
+   "type": "git",
+   "subDir": null,
+   "scope": "",
+   "rev": "0cfacc8dc13402ccb737b17e96ea6c012d5ef866",
+   "name": "cvc5",
+   "manifestFile": "lake-manifest.json",
+   "inputRev": "main",
+   "inherited": false,
+   "configFile": "lakefile.lean"}],
  "name": "verif",
  "lakeDir": ".lake"}
