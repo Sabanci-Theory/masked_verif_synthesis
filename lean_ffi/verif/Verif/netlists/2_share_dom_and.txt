@@ -1,0 +1,13 @@
+-- Secrets: a b
+-- Randoms: r0 r1 r2
+
+w0 = a + r0
+w1 = b + r1
+w2 = w0 * w1
+w3 = w0 * r1
+w4 = w1 * r0
+w5 = r0 * r1
+w6 = w3 + r2
+w7 = w4 + r2
+w8 = w2 + w6
+w9 = w5 + w7
