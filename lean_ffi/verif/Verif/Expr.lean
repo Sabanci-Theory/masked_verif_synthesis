@@ -1,9 +1,9 @@
 namespace verif
 
+-- Q: Should we include Public?
 inductive VarType
   | Secret   : String → VarType
   | Random   : String → VarType
-  | Constant : String → VarType
   deriving Repr, DecidableEq, Inhabited
 
 inductive Expr
