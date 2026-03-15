@@ -1,0 +1,12 @@
+Discuss:
+    * Using content-based identifiers modulo commutativity
+        - eliminates redistribution of IDs in factoring
+        - checking whether a node is novel becomes a constant time query
+    * Tracking reference counts (specifically references from `xorNode`s) and storing the IDs of random variables somewhere
+        - turns the query of standalone XOR'ed random variables into O(1) time
+        - however, it will introduce more bookkeeping in the factoring algorithm
+    * Realized negatives:
+        - after factoring, nodes that were moved out of place become semantically redundant (they are now unreachable from roots),
+          but references pointing at them are kept in HashMaps, burdening the memory. if reference counting is implemented, this
+          can be worked around but that would increase the complexity of factoring
+        - right now, I think the way in which we query the rewritable random variables are not efficient
