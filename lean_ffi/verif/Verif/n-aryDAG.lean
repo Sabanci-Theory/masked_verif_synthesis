@@ -325,8 +325,8 @@ def example1 : String :=
 
   let (dag, root) := dag.mkXor #[ea, ebc, d, ear0]
   let (dag', fac) := dag.factor root
-  s!"{dag.ppNode root} ===> {dag'.ppNode fac}"
+  s!"{dag.ppNode root}\n{dag'.ppNode fac}"
 
-#eval example1
+#eval IO.println example1
 
 end verif

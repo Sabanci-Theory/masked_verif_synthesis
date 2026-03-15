@@ -67,10 +67,10 @@ def example2 : String :=
   let (dag', fac) := dag.factor root
   let standalone  := Rewrite.findStandaloneXorRandoms dag' #[fac]
   s!"Before : {dag.ppNode root}\n" ++
-  s!"After : {dag'.ppNode fac}\n" ++
-  s!"Standalone XOR randoms : {standalone.toList.map (dag'.ppNode)}"
+  s!"After  : {dag'.ppNode fac}\n" ++
+  s!"Rewritable randoms : {standalone.toList.map (dag'.ppNode)}"
 
-#eval example2
+#eval IO.println example2
 
 
 def example3 : String :=
@@ -87,8 +87,8 @@ def example3 : String :=
   let standalone   := Rewrite.findStandaloneXorRandoms dag roots
   s!"wire1 : {dag.ppNode wire1}\n" ++
   s!"wire2 : {dag.ppNode wire2}\n" ++
-  s!"Standalone XOR randoms : {standalone.toList.map (dag.ppNode)}"
+  s!"Rewritable randoms : {standalone.toList.map (dag.ppNode)}"
 
-#eval example3
+#eval IO.println example3
 
 end verif
