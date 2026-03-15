@@ -35,9 +35,10 @@ open Std (HashMap)
 /-- A hash-consed `𝔽₂`-circuit DAG.
     `∀id : NodeId, intern[nodes[id]] = id ∧ ∀k : NodeKind, nodes[intern[k]] = k`. -/
 structure DAG where
-  nodes  : HashMap NodeId NodeKind  := {}
-  intern : HashMap NodeKind NodeId  := {}
-  nextId : NodeId                   := 0  -- Q: is it possible to determine IDs in a different way?
+  nodes  : HashMap NodeId NodeKind := {}
+  intern : HashMap NodeKind NodeId := {}
+  nextId : NodeId                  := 0  -- Q: is it possible to determine IDs in a different way?
+  randoms : Array NodeId           := #[]
 
 namespace DAG
 
@@ -141,7 +142,14 @@ def mkConst (dag : DAG) (b : Bool) : DAG × NodeId :=
   dag.internNode (NodeKind.constVal b)
 
 def mkLeaf (dag : DAG) (v : VarType) : DAG × NodeId :=
-  dag.internNode (NodeKind.leaf v)
+  let k := NodeKind.leaf v
+  match dag.intern.get? k with
+  | some id => (dag, id)
+  | none    =>
+    let (dag', id) := dag.alloc k
+    match v with
+    | VarType.Random _ => ({ dag' with randoms := dag'.randoms.push id }, id)
+    | _                => (dag', id)
 
 /-- Builds a canonical XOR node from a pre-normalised child array.
     Handles the identity collapses: Array.empty → false, singleton → passthrough. -/
@@ -249,7 +257,7 @@ partial def factorNode (dag : DAG) (id : NodeId) : DAG × NodeId :=
         (dag, #[])
     -- Step 2: re-normalise after child updates (IDs may have changed)
     let (dag, id') := dag.mkXor xorCh'
-    -- Step 3: greedy top-level factoring loop
+    -- Step 3: top-level factoring loop
     match dag.kind? id' with
     | some (NodeKind.xorNode ch) =>
       match bestFactor (factorFreqs dag ch) with
@@ -268,7 +276,7 @@ partial def factorNode (dag : DAG) (id : NodeId) : DAG × NodeId :=
         (dag, #[])
     dag.mkAnd andCh'
 
-  | _ => (dag, id)   -- leaves and constants are fully factored
+  | _ => (dag, id)   -- leaves and constants are already fully factored
 
 /-- Main entry point for the factoring algorithm: fully factor the circuit node at `id`. -/
 def factor (dag : DAG) (id : NodeId) : DAG × NodeId :=
@@ -299,7 +307,7 @@ end DAG
 -- Example
 -- ============================================================
 
-def buildAndFactor : String :=
+def example1 : String :=
   let dag : DAG := {}
   let (dag, e) := dag.mkLeaf (VarType.Public "e")
   let (dag, a) := dag.mkLeaf (VarType.Secret "a")
@@ -319,6 +327,6 @@ def buildAndFactor : String :=
   let (dag', fac) := dag.factor root
   s!"{dag.ppNode root} ===> {dag'.ppNode fac}"
 
-#eval buildAndFactor
+#eval example1
 
 end verif
