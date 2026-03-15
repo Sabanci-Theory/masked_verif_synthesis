@@ -39,8 +39,6 @@ structure DAG where
   intern : HashMap NodeKind NodeId  := {}
   nextId : NodeId                   := 0  -- Q: is it possible to determine IDs in a different way?
 
-def empty : DAG := {}
-
 namespace DAG
 
 -- ============================================================
@@ -194,9 +192,9 @@ def bestFactor (freq : HashMap NodeId Nat) : Option NodeId :=
     if cnt < 2 then best
     else match best with
          | none          => some (fac, cnt)
-         | some (bf, bc) =>
-           if cnt > bc || (cnt == bc && fac < bf)
-           then some (fac, cnt) else best)
+         | some (bf, bc) => if cnt > bc || (cnt == bc && fac < bf)
+                            then some (fac, cnt)
+                            else best)
     none).map (·.1)
 
 /-- Removes `factor` from the AND-children of `id`, re-interning the result.
@@ -304,20 +302,20 @@ end DAG
 def buildAndFactor : String :=
   let dag : DAG := {}
   let (dag, e) := dag.mkLeaf (VarType.Public "e")
-  let (dag, a) := dag.mkLeaf (VarType.Public "a")
-  let (dag, b) := dag.mkLeaf (VarType.Public "b")
-  let (dag, c) := dag.mkLeaf (VarType.Public "c")
+  let (dag, a) := dag.mkLeaf (VarType.Secret "a")
+  let (dag, b) := dag.mkLeaf (VarType.Secret "b")
+  let (dag, r0) := dag.mkLeaf (VarType.Random "r0")
   let (dag, d) := dag.mkLeaf (VarType.Public "d")
 
   let (dag, ea)   := dag.mkAnd #[e, a]
 
-  let (dag, bc)   := dag.mkAnd #[b, c]
-  let (dag, ebc)  := dag.mkAnd #[e, bc]
+  let (dag, br0)   := dag.mkAnd #[b, r0]
+  let (dag, ebc)  := dag.mkAnd #[e, br0]
 
-  let (dag, ac)   := dag.mkXor #[a, c]
-  let (dag, eac)  := dag.mkAnd #[e, ac]
+  let (dag, ar0)   := dag.mkXor #[a, r0]
+  let (dag, ear0)  := dag.mkAnd #[e, ar0]
 
-  let (dag, root) := dag.mkXor #[ea, ebc, d, eac]
+  let (dag, root) := dag.mkXor #[ea, ebc, d, ear0]
   let (dag', fac) := dag.factor root
   s!"{dag.ppNode root} ===> {dag'.ppNode fac}"
 
