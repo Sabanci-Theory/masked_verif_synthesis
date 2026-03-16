@@ -55,6 +55,10 @@ def findStandaloneXorRandoms (dag : DAG) (roots : Array NodeId) : Array NodeId :
 
 end Rewrite
 
+-- ============================================================
+-- Examples
+-- ============================================================
+
 def example2 : String :=
   let dag : DAG := {}
   let (dag, e)  := dag.mkLeaf (VarType.Public "e")
@@ -71,7 +75,6 @@ def example2 : String :=
   s!"Rewritable randoms : {standalone.toList.map (dag'.ppNode)}"
 
 #eval IO.println example2
-
 
 def example3 : String :=
   let dag : DAG := {}
@@ -90,5 +93,34 @@ def example3 : String :=
   s!"Rewritable randoms : {standalone.toList.map (dag.ppNode)}"
 
 #eval IO.println example3
+
+def example4 : String :=
+  let dag : DAG := {}
+  let (dag, a)  := dag.mkLeaf (VarType.Secret "a")
+  let (dag, b)  := dag.mkLeaf (VarType.Secret "b")
+  let (dag, c)  := dag.mkLeaf (VarType.Secret "c")
+  let (dag, r0) := dag.mkLeaf (VarType.Random "r0")
+  let (dag, r1) := dag.mkLeaf (VarType.Random "r1")
+  let (dag, r2) := dag.mkLeaf (VarType.Random "r2")
+
+  let (dag, ar0) := dag.mkXor #[a, r0]
+  let (dag, r0a) := dag.mkXor #[r0, a]
+  let (dag, br1) := dag.mkXor #[b, r1]
+  let (dag, cr2) := dag.mkXor #[c, r2]
+
+  let (dag, ar0br1) := dag.mkAnd #[ar0, br1]
+  let (dag, ar0cr2) := dag.mkAnd #[ar0, cr2]
+  let (dag, r0ar1)  := dag.mkAnd #[r0a, r1]
+  let (dag, ar0r2)  := dag.mkAnd #[ar0, r2]
+
+  let (dag, root) := dag.mkXor #[ar0br1, ar0cr2, c, r2, r0ar1, ar0r2]
+  let (dag', fac) := dag.factor root
+  let standalone := Rewrite.findStandaloneXorRandoms dag' #[fac]
+
+  s!"{dag.ppNode root}\n" ++
+  s!"{dag'.ppNode fac}\n\n" ++
+  s!"Rewritable randoms : {standalone.toList.map (dag'.ppNode)}"
+
+#eval IO.println example4
 
 end verif

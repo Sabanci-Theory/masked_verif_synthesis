@@ -293,9 +293,9 @@ partial def ppNode (dag : DAG) (id : NodeId) : String :=
   | none                     => s!"[invalid:{id}]"
   | some (NodeKind.constVal true)    => "1"
   | some (NodeKind.constVal false)   => "0"
-  | some (NodeKind.leaf (VarType.Secret s)) => s!"s({s})"
-  | some (NodeKind.leaf (VarType.Random r)) => s!"r({r})"
-  | some (NodeKind.leaf (VarType.Public p)) => p
+  | some (NodeKind.leaf (VarType.Secret s)) => s
+  | some (NodeKind.leaf (VarType.Random r)) => r
+  | some (NodeKind.leaf (VarType.Public p)) => s!"p({p})"
   | some (NodeKind.xorNode ch)       =>
     "(" ++ String.intercalate " + " (ch.toList.map (ppNode dag)) ++ ")"
   | some (NodeKind.andNode ch)       =>
