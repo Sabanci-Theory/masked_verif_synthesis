@@ -88,7 +88,7 @@ def andInsert (arr : Array NodeId) (val : NodeId) : Array NodeId :=
 /-- Looks up the structural kind of a node by its `NodeId`. -/
 @[inline]
 def kind? (dag : DAG) (id : NodeId) : Option NodeKind :=
-  dag.nodes.get? id
+  dag.nodes[id]?
 
 /-- Allocates a new node `k`, without checking whether it is in intern (the caller should make sure that `k` is a new structure). -/
 def alloc (dag : DAG) (k : NodeKind) : DAG × NodeId :=
@@ -100,7 +100,7 @@ def alloc (dag : DAG) (k : NodeKind) : DAG × NodeId :=
 /-- Returns the existing `NodeId` for `k` if already interned, or allocate a fresh node and return its id. -/
 @[inline]
 def internNode (dag : DAG) (k : NodeKind) : DAG × NodeId :=
-  match dag.intern.get? k with
+  match dag.intern[k]? with
   | some id => (dag, id)
   | none    => dag.alloc k
 
@@ -123,7 +123,7 @@ def flattenXor (dag : DAG) (ids : Array NodeId) : Array NodeId :=
     - absorbs constVal = 1
     - annihilates constVal = 0
     - unpacks nested andNode children
-    - returns a sorted andNode -/
+    - returns a sorted andNode and a Bool value to signal whether the product vanished -/
 def flattenAnd (dag : DAG) (ids : Array NodeId) : Array NodeId × Bool :=
   ids.foldl (fun (acc, ann) id =>
     if ann then (acc, true)   -- already annihilated; skip remaining
@@ -143,7 +143,7 @@ def mkConst (dag : DAG) (b : Bool) : DAG × NodeId :=
 
 def mkLeaf (dag : DAG) (v : VarType) : DAG × NodeId :=
   let k := NodeKind.leaf v
-  match dag.intern.get? k with
+  match dag.intern[k]? with
   | some id => (dag, id)
   | none    =>
     let (dag', id) := dag.alloc k
@@ -155,8 +155,8 @@ def mkLeaf (dag : DAG) (v : VarType) : DAG × NodeId :=
     Handles the identity collapses: Array.empty → false, singleton → passthrough. -/
 def mkXorCanon (dag : DAG) (ch : Array NodeId) : DAG × NodeId :=
   match ch.size with
-  | 0 => dag.mkConst false
-  | 1 => (dag, ch[0]!)
+  | 0 => dag.mkConst false -- something stupid; not to be reached
+  | 1 => (dag, ch[0]!)     -- might be reached from `applyFactor`
   | _ => dag.internNode (NodeKind.xorNode ch)
 
 /-- Builds a canonical AND node from a pre-normalised child array.
@@ -164,8 +164,8 @@ def mkXorCanon (dag : DAG) (ch : Array NodeId) : DAG × NodeId :=
 def mkAndCanon (dag : DAG) (ch : Array NodeId) (ann : Bool) : DAG × NodeId :=
   if ann then dag.mkConst false
   else match ch.size with
-  | 0 => dag.mkConst true
-  | 1 => (dag, ch[0]!)
+  | 0 => dag.mkConst true -- something stupid; not to be reached
+  | 1 => (dag, ch[0]!)    -- might be reached from `stripFactor`
   | _ => dag.internNode (NodeKind.andNode ch)
 
 /-- Public XOR constructor: flattens nested XOR nodes and cancels duplicates
@@ -189,7 +189,7 @@ def factorFreqs (dag : DAG) (xorCh : Array NodeId) : HashMap NodeId Nat :=
   xorCh.foldl (fun freq id =>
     match dag.kind? id with
     | some (NodeKind.andNode fac) =>
-      fac.foldl (fun m f => m.insert f ((m.get? f).getD 0 + 1)) freq
+      fac.foldl (fun m f => m.insert f (m[f]?.getD 0 + 1)) freq
     | _ => freq)
     {}
 
@@ -203,7 +203,7 @@ def bestFactor (freq : HashMap NodeId Nat) : Option NodeId :=
          | some (bf, bc) => if cnt > bc || (cnt == bc && fac < bf)
                             then some (fac, cnt)
                             else best)
-    none).map (·.1)
+    none).map (·.fst)
 
 /-- Removes `factor` from the AND-children of `id`, re-interning the result.
     If `factor` is not present, returns `id` unchanged. -/
@@ -212,25 +212,25 @@ def stripFactor (dag : DAG) (id factor : NodeId) : DAG × NodeId :=
   | some (NodeKind.andNode fac) =>
     let i := lowerBound fac factor
     if i < fac.size && fac[i]! == factor
-    then dag.mkAndCanon (fac.eraseIdx! i) false
+    then dag.mkAndCanon (fac.eraseIdx! i) false -- If the term `factor` need be removed from the andNode `fac`, a new
+                                                -- AND-node is created with exactly the same content, except `factor`.
     else (dag, id)
   | _ => (dag, id)
 
 /-- Applies one factoring step on a XOR-child array by factor `f`:
     1. Partitions children into those whose AND-factors contain `f` and those that do not.
     2. Strips `f` from each term in the first partition.
-    3. Builds `f · (XOR of stripped terms)`.
-    4. Rebuilds the outer XOR as `(untouched terms) ⊕ (factored compound)`. -/
+    3. Builds `f * (XOR of stripped terms)`.
+    4. Rebuilds the outer XOR as `(untouched terms) + (factored compound)`. -/
 def applyFactor (dag : DAG) (xorCh : Array NodeId) (f : NodeId) : DAG × NodeId :=
-  let (withF, without) := xorCh.partition fun id =>
+  let (withF, without) := xorCh.partition (fun id =>
     match dag.kind? id with
     | some (NodeKind.andNode fac) => sortedMem fac f
-    | _                   => false
-  let (dag, stripped) :=
-    withF.foldl (fun (d, acc) id =>
-      let (d', s) := stripFactor d id f
-      (d', acc.push s))
-      (dag, #[])
+    | _                           => false)
+  let (dag, stripped) := withF.foldl (fun (d, acc) id =>
+    let (d', s) := stripFactor d id f
+    (d', acc.push s))
+    (dag, #[])
   let (dag, innerXor) := dag.mkXor stripped
   let (dag, facTerm)  := dag.mkAnd #[f, innerXor]
   dag.mkXor (without.push facTerm)
@@ -245,7 +245,7 @@ def applyFactor (dag : DAG) (xorCh : Array NodeId) (f : NodeId) : DAG × NodeId 
     - Leaves and constants: already fully factored; returned unchanged.
 
     TODO: Declared `partial` because the termination argument (strictly decreasing
-    total factor-occurrence count) is non-trivial to encode as a Lean measure. -/
+    total factor-occurrence count) is non-trivial to prove. -/
 partial def factorNode (dag : DAG) (id : NodeId) : DAG × NodeId :=
   match dag.kind? id with
   | some (NodeKind.xorNode xorCh) =>
@@ -265,7 +265,7 @@ partial def factorNode (dag : DAG) (id : NodeId) : DAG × NodeId :=
       | some f =>
         let (dag, id'') := applyFactor dag ch f
         factorNode dag id''        -- re-enter to handle newly created inner XORs
-    | _ => (dag, id')
+    | _ => (dag, id')              -- unreachable
 
   | some (NodeKind.andNode andCh) =>
     -- Recurse into AND children (may wrap inner XOR sub-expressions)
@@ -309,21 +309,21 @@ end DAG
 
 def example1 : String :=
   let dag : DAG := {}
-  let (dag, e) := dag.mkLeaf (VarType.Public "e")
-  let (dag, a) := dag.mkLeaf (VarType.Secret "a")
-  let (dag, b) := dag.mkLeaf (VarType.Secret "b")
+  let (dag, e)  := dag.mkLeaf (VarType.Public "e")
+  let (dag, a)  := dag.mkLeaf (VarType.Secret "a")
+  let (dag, b)  := dag.mkLeaf (VarType.Secret "b")
   let (dag, r0) := dag.mkLeaf (VarType.Random "r0")
-  let (dag, d) := dag.mkLeaf (VarType.Public "d")
+  let (dag, d)  := dag.mkLeaf (VarType.Public "d")
 
-  let (dag, ea)   := dag.mkAnd #[e, a]
+  let (dag, ea) := dag.mkAnd #[e, a]
 
-  let (dag, br0)   := dag.mkAnd #[b, r0]
-  let (dag, ebc)  := dag.mkAnd #[e, br0]
+  let (dag, br0)  := dag.mkAnd #[b, r0]
+  let (dag, ebr0) := dag.mkAnd #[e, br0]
 
-  let (dag, ar0)   := dag.mkXor #[a, r0]
-  let (dag, ear0)  := dag.mkAnd #[e, ar0]
+  let (dag, ar0)  := dag.mkXor #[a, r0]
+  let (dag, ear0) := dag.mkAnd #[e, ar0]
 
-  let (dag, root) := dag.mkXor #[ea, ebc, d, ear0]
+  let (dag, root) := dag.mkXor #[ea, ebr0, d, ear0]
   let (dag', fac) := dag.factor root
   s!"{dag.ppNode root}\n{dag'.ppNode fac}"
 

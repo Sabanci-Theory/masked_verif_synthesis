@@ -1,24 +1,9 @@
 a1b1 + a1c1 + c1 + a1b2 + a1c2
-
     = (a + r0)*(b + r1) + (a + r0)*(c + r2) + (c + r2) + (a + r0)*(r1) + (a + r0)*(r2)
 
 Q:
-
-    (a + r0)*(b + r1) + (a + r0)*(c + r2) + (c + r2) + (a + r0)*(r1) + (a + r0)*(r2) ==> (b + c) * (a + r0) + c + r2
+    (a + r0)*(b + r1) + (a + r0)*(c + r2) + (c + r2) + (a + r0)*(r1) + (a + r0)*(r2)
+    ==>
+    (b + c) * (a + r0) + c + r2
 
     sol: f = r0, r1, (b + c) * (a + r0) + c + r2 + (b' + c') * (a' + r0) + c'
-
-    r'2 := b*a + b*r0 + c*a + c*r0 + c + r2 + b'a' + b'r0 + c'a' + c'r0 + c'
-
-
-
-
-    case 1: (a + r0) = 0
-        c + r2 = c' + r'2
-            sol: r'0 := r0, r'1 := r1, r'2 := c' + c + r2
-    case 2: (a + r0) = 1
-        b + r2 = b' + r'2
-            sol: r'0 := r0, r'1 := r1, r'2 := b' + b + r2
-
-    sol: f = ite ((a + r0) = 0) (mk-rands r0 r1 (c' + c + r2)) (mk-rands r0 r1 (b' + b + r2))
-

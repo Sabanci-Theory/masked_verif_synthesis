@@ -3,6 +3,10 @@ import Std.Data.HashMap
 
 namespace verif
 
+/-!
+# Rewriting Algorithm Preserving Distributional Equality
+-/
+
 open Std (HashMap)
 
 namespace Rewrite
@@ -24,7 +28,7 @@ partial def computeParentsAux
     | some (NodeKind.andNode ch) =>
       ch.foldl (fun (p, v) cid =>
         -- Record `id` as a parent of `cid`, then recurse into `cid`.
-        let p' := p.insert cid (((p.get? cid).getD #[]).push id)
+        let p' := p.insert cid ((p[cid]?.getD #[]).push id)
         computeParentsAux dag cid p' v)
         (parents, visited)
     | _ => (parents, visited)
@@ -32,18 +36,18 @@ partial def computeParentsAux
 /-- Computes the parent map for the subgraph reachable from `roots`. -/
 def computeParents (dag : DAG) (roots : Array NodeId) : ParentMap :=
   (roots.foldl (fun (p, v) root => computeParentsAux dag root p v)
-    ({}, {})).1
+    ({}, {})).fst
 
 /-- Tests if `id` is a random leaf that appears as a sole child of an xorNode -/
 def isStandaloneXorRandom (dag : DAG) (parents : ParentMap) (id : NodeId) : Bool :=
   match dag.kind? id with
   | some (NodeKind.leaf (VarType.Random _)) =>
-    match parents.get? id with
+    match parents[id]? with
     | some ps =>
       ps.size == 1 &&
       match dag.kind? ps[0]! with
-      | some (.xorNode _) => true
-      | _                 => false
+      | some (NodeKind.xorNode _) => true
+      | _                         => false
     | none => false   -- random not reachable from any root
   | _ => false
 
@@ -104,7 +108,7 @@ def example4 : String :=
   let (dag, r2) := dag.mkLeaf (VarType.Random "r2")
 
   let (dag, ar0) := dag.mkXor #[a, r0]
-  let (dag, r0a) := dag.mkXor #[r0, a]
+  let (dag, r0a) := dag.mkXor #[r0, a] -- nothing happens here actually, just returns the same NodeId with `ar0`
   let (dag, br1) := dag.mkXor #[b, r1]
   let (dag, cr2) := dag.mkXor #[c, r2]
 
@@ -113,7 +117,7 @@ def example4 : String :=
   let (dag, r0ar1)  := dag.mkAnd #[r0a, r1]
   let (dag, ar0r2)  := dag.mkAnd #[ar0, r2]
 
-  let (dag, root) := dag.mkXor #[ar0br1, ar0cr2, c, r2, r0ar1, ar0r2]
+  let (dag, root) := dag.mkXor #[ar0br1, ar0cr2, cr2, r0ar1, ar0r2]
   let (dag', fac) := dag.factor root
   let standalone := Rewrite.findStandaloneXorRandoms dag' #[fac]
 
