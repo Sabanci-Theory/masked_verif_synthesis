@@ -1,6 +1,6 @@
 Discuss:
     * Using content-based identifiers modulo commutativity
-        - eliminates redistribution of IDs in factoring
+        - eliminates redistribution of IDs in factoring/interning
         - checking whether a node is novel becomes a constant time query
     = 128-bit hashes for identifiers
         X -> h1, h2, h3
@@ -15,7 +15,7 @@ Discuss:
           but references pointing at them are kept in HashMaps, burdening the memory. if reference counting is implemented, this
           can be worked around but that would increase the complexity of factoring and many other procedures
         - right now, I think the way in which we query the rewritable random variables are not efficient
-        ! flattening, in practice, loses information about cables. is this problematic?
+        ! flattening, in practice, loses information about cables. is this problematic? yes it is, but we are working around it
 
 = is there a difference between factoring from top-to-bottom and bottom-to-top
 = some more documentation is needed
