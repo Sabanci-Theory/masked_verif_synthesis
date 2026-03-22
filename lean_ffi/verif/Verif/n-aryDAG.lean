@@ -321,11 +321,12 @@ def example1 : IO Unit :=
   let (dag, ebr0) := dag.mkAnd #[e, br0]
 
   let (dag, ar0)  := dag.mkXor #[a, r0]
+  let (dag, w)    := dag.mkXor #[r0, a, a, a]
   let (dag, ear0) := dag.mkAnd #[e, ar0]
 
   let (dag, root) := dag.mkXor #[ea, ebr0, d, ear0]
   let (dag', fac) := dag.factor root
-  IO.println s!"{dag.ppNode root}\n{dag'.ppNode fac}"
+  IO.println s!"{dag.ppNode root}\n{dag'.ppNode fac}\n{w == ar0}"
 
 #eval example1
 

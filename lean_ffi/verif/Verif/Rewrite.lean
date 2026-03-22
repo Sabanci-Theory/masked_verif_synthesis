@@ -86,7 +86,7 @@ partial def dfsChild (dag : DAG) (s : DFSState) (childId : NodeId) (parentIsXor 
     let s := { s with visited := s.visited.insert childId () }
     match dag.kind? childId with
     | some (NodeKind.xorNode ch) =>
-      ch.foldl (fun acc cid => dfsChild dag acc cid true)  s
+      ch.foldl (fun acc cid => dfsChild dag acc cid true) s
     | some (NodeKind.andNode ch) =>
       ch.foldl (fun acc cid => dfsChild dag acc cid false) s
     | _ => s  -- leaf or const: no children
@@ -98,7 +98,7 @@ partial def dfsRoot (dag : DAG) (s : DFSState) (rootId : NodeId) : DFSState :=
     let s := { s with visited := s.visited.insert rootId () }
     match dag.kind? rootId with
     | some (NodeKind.xorNode ch) =>
-      ch.foldl (fun acc cid => dfsChild dag acc cid true)  s
+      ch.foldl (fun acc cid => dfsChild dag acc cid true) s
     | some (NodeKind.andNode ch) =>
       ch.foldl (fun acc cid => dfsChild dag acc cid false) s
     | _ => s
@@ -130,7 +130,7 @@ namespace ProbeState
 /-- Checks if `NodeId` is rewritable. -/
 @[inline]
 def isStandalone (ps : ProbeState) (id : NodeId) : Bool :=
-  ps.totalParCount[id]? == some 1 && ps.xorParCount[id]?   == some 1
+  ps.totalParCount[id]? == some 1 && ps.xorParCount[id]? == some 1
 
 /-- Pretty-printing for debugging. -/
 def pp (ps : ProbeState) (dag : DAG) : String :=
@@ -181,8 +181,7 @@ def initProbe (gdag : GlobalDAG) (wireNames : Array String)
       (gdag.dag, #[])
   let gdag := { gdag with dag := dag }
   -- Step 3: DFS from all factored roots.
-  let s : DFSState :=
-    factoredRoots.foldl (dfsRoot gdag.dag) {}
+  let s : DFSState := factoredRoots.foldl (dfsRoot gdag.dag) {}
   -- Step 4: collect standalone randoms from the global randoms array.
   let todo := gdag.dag.randoms.filter fun rId =>
     s.totalParCount[rId]? == some 1 &&
