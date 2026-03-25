@@ -278,9 +278,12 @@ partial def factorNode (dag : DAG) (id : NodeId) : DAG × NodeId :=
 
   | _ => (dag, id)   -- leaves and constants are already fully factored
 
-/-- Main entry point for the factoring algorithm: fully factor the circuit node at `id`. -/
-def factor (dag : DAG) (id : NodeId) : DAG × NodeId :=
-  factorNode dag id
+/-- Main entry point for the factoring algorithm: fully factor the circuit from nodes at `ids`. -/
+def factor (dag : DAG) (ids : Array NodeId) : DAG × Array NodeId :=
+  ids.foldl (fun (d, roots) id =>
+              let (d', id') := d.factorNode id
+              (d', roots.push id'))
+            (dag, #[])
 
 -- ============================================================
 -- Debug pretty-printer
@@ -325,8 +328,8 @@ def example1 : IO Unit :=
   let (dag, ear0) := dag.mkAnd #[e, ar0]
 
   let (dag, root) := dag.mkXor #[ea, ebr0, d, ear0]
-  let (dag', fac) := dag.factor root
-  IO.println s!"{dag.ppNode root}\n{dag'.ppNode fac}\n{w == ar0}"
+  let (dag', fac) := dag.factor #[root]
+  IO.println s!"{dag.ppNode root}\n{dag'.ppNode fac[0]!}\n{w == ar0}"
 
 #eval example1
 

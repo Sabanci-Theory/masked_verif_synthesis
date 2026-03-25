@@ -175,12 +175,7 @@ def initProbe (gdag : GlobalDAG) (wireNames : Array String)
     | some id => Except.ok id
     | none    => Except.error s!"Unknown wire: '{name}'"
   -- Step 2: factor each root, passing the dag along.
-  let (dag, factoredRoots) :=
-    origRoots.foldl
-      (fun (d, roots) id =>
-        let (d', id') := d.factor id
-        (d', roots.push id'))
-      (gdag.dag, #[])
+  let (dag, factoredRoots) := gdag.dag.factor origRoots
   let gdag := { gdag with dag := dag }
   -- Step 3: DFS from all factored roots.
   let s : DFSState := factoredRoots.foldl (dfsRoot gdag.dag) {}
@@ -198,12 +193,7 @@ def initProbe (gdag : GlobalDAG) (wireNames : Array String)
 /-- Same as above but probes by `NodeId` directly. -/
 def initProbeByIds (gdag : GlobalDAG) (rootIds : Array NodeId)
   : GlobalDAG × ProbeState :=
-  let (dag, factoredRoots) :=
-    rootIds.foldl
-      (fun (d, roots) id =>
-        let (d', id') := d.factor id
-        (d', roots.push id'))
-      (gdag.dag, #[])
+  let (dag, factoredRoots) := gdag.dag.factor rootIds
   let gdag := { gdag with dag := dag }
   let s : DFSState := factoredRoots.foldl (dfsRoot gdag.dag) {}
   let todo := gdag.dag.randoms.filter fun rId =>
@@ -267,7 +257,7 @@ def circuit2 : GlobalDAG :=
 def example3 : IO Unit := do
   let g := circuit2
   let origRoot := (g.wireId? "w").get!
-  IO.println s!"Original w : {g.ppNode origRoot}"
+  IO.println s!"Original: {g.ppNode origRoot}"
   match initProbe g #["w"] with
   | Except.error e     => IO.println s!"Error: {e}"
   | Except.ok (g', ps) => IO.println s!"Probe:\n{ps.pp g'.dag}"
