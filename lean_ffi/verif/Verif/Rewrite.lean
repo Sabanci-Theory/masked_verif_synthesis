@@ -67,13 +67,15 @@ probe context that directly reference `n`, which is the "fan-in".
 -/
 
 /-- Accumulated state during the DFS. -/
-private structure DFSState where
+structure DFSState where
   xorParCount   : HashMap NodeId Nat  := {}
   totalParCount : HashMap NodeId Nat  := {}
   visited       : HashMap NodeId Unit := {}
+  -- add multiplicative depth here, after deciding on the heuristic
 
 /-- Processes one edge `parent → childId`. -/
-partial def dfsChild (dag : DAG) (s : DFSState) (childId : NodeId) (parentIsXor : Bool) : DFSState :=
+partial def dfsChild (dag : DAG) (s : DFSState) (childId : NodeId) (parentIsXor : Bool)
+  : DFSState :=
   -- Record this parent edge.
   let tpc := s.totalParCount.insert childId ((s.totalParCount[childId]?).getD 0 + 1)
   let xpc := if parentIsXor
@@ -323,9 +325,41 @@ def example5 : IO Unit := do
   for probe in [#["w1"], #["w3"], #["w4"], #["w3", "w4"]] do
     let label := "{" ++ String.intercalate ", " probe.toList ++ "}"
     match initProbe g probe with
-    | .error e     => IO.println s!"Probe {label}: error — {e}"
-    | .ok (g', ps) => IO.println s!"Probe {label}:\n{ps.pp g'.dag}"
+    | Except.error e     => IO.println s!"Probe {label}: error — {e}"
+    | Except.ok (g', ps) => IO.println s!"Probe {label}:\n{ps.pp g'.dag}"
 
 #eval example5
+
+/-! ## Example 6 — Q_12^4
+
+    s0 = (a + r0)*(b + r1) + (a + r0)*(c + r2) + (c + r2) + (a + r0)*(r1) + (a + r0)*(r2)
+-/
+def circuit5 : GlobalDAG :=
+  let g : GlobalDAG := {}
+  let (g, a) := g.mkLeaf (VarType.Secret "a")
+  let (g, b) := g.mkLeaf (VarType.Secret "b")
+  let (g, c) := g.mkLeaf (VarType.Secret "c")
+  let (g, r0) := g.mkLeaf (VarType.Random "r0")
+  let (g, r1) := g.mkLeaf (VarType.Random "r1")
+  let (g, r2) := g.mkLeaf (VarType.Random "r2")
+  let (g, ar0) := g.mkXor #[a, r0]
+  let (g, br1) := g.mkXor #[b, r1]
+  let (g, cr2) := g.mkXor #[c, r2]
+  let (g, t1) := g.mkAnd #[ar0, br1]
+  let (g, t2) := g.mkAnd #[ar0, cr2]
+  let (g, t3) := g.mkAnd #[ar0, r1]
+  let (g, t4) := g.mkAnd #[ar0, r2]
+  let (g, root) := g.mkXor #[t1, t2, cr2, t3, t4]
+  g.addWire "w0" root
+
+def example6 : IO Unit := do
+  let g := circuit5
+  let origRoot := (g.wireId? "w0").get!
+  IO.println s!"Original: {g.ppNode origRoot}"
+  match initProbe g #["w0"] with
+  | Except.error e     => IO.println s!"Error: {e}"
+  | Except.ok (g', ps) => IO.println s!"Probe:\n{ps.pp g'.dag}"
+
+#eval example6
 
 end verif
