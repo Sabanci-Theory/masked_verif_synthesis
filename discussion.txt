@@ -1,21 +1,30 @@
 Discuss:
-    * Using content-based identifiers modulo commutativity
+    * Using content-based identifiers modulo commutativity (less prioritized)
         - eliminates redistribution of IDs in factoring/interning
         - checking whether a node is novel becomes a constant time query
     = 128-bit hashes for identifiers
-        X -> h1, h2, h3
-        MD5(X ++ h1 ++ h2 ++ h3) -- use a fast hashing algorithm
+        - X -> h1, h2, h3
+        - MD5(X ++ h1 ++ h2 ++ h3) -- use a fast hashing algorithm
 
     * Tracking reference counts (specifically references from `xorNode`s) and storing the IDs of random variables somewhere
-        - turns the query of standalone XOR'ed random variables into O(1) time
-        - however, it will introduce more bookkeeping in the factoring algorithm
+        - turns the query of standalone XOR'ed random variables into O(|random variables|) time
+    + this is now implemented
     
+    * Rewrite order heuristic in maskVerif is to rewrite the random variable with the least multiplicative depth. This is a
+      reasonable heuristic, but I have another: rewrite the random whose XOR parent has the most children.
+
     * Realized negatives:
         - after factoring, nodes that were moved out of place become semantically redundant (they are now unreachable from roots),
           but references pointing at them are kept in HashMaps, burdening the memory. if reference counting is implemented, this
-          can be worked around but that would increase the complexity of factoring and many other procedures
-        - right now, I think the way in which we query the rewritable random variables are not efficient
-        ! flattening, in practice, loses information about cables. is this problematic? yes it is, but we are working around it
+          can be worked around but that would increase the complexity of factoring and many other procedures (even reference
+          rounting is not exactly a solution)
+        = flattening, in practice, loses information about cables. is this problematic?
+        + yes it is, but we can work around it
 
-= is there a difference between factoring from top-to-bottom and bottom-to-top
+= is there a difference between factoring from top-to-bottom and bottom-to-top?
++ yes there is, but for our purposes it is not clear if one has an edge over the other.
+
 = some more documentation is needed
++ source code is thoroughly documented, a README is on its way
+
+= rewrites first and then factoring, probably
