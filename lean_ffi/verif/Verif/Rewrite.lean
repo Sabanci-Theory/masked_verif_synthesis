@@ -68,41 +68,49 @@ probe context that directly reference `n`, which is the "fan-in".
 
 /-- Accumulated state during the DFS. -/
 structure DFSState where
-  xorParCount   : HashMap NodeId Nat  := {}
-  totalParCount : HashMap NodeId Nat  := {}
-  visited       : HashMap NodeId Unit := {}
-  -- add multiplicative depth here, after deciding on the heuristic
+  xorParCount   : HashMap NodeId Nat            := {}
+  totalParCount : HashMap NodeId Nat            := {}
+  mulDepth      : HashMap NodeId Nat            := {}
+  parents       : HashMap NodeId (Array NodeId) := {}
+  visited       : HashMap NodeId Unit           := {}
 
 /-- Processes one edge `parent → childId`. -/
-partial def dfsChild (dag : DAG) (s : DFSState) (childId : NodeId) (parentIsXor : Bool)
+partial def dfsChild (dag : DAG) (s : DFSState) (childId : NodeId) (parentId : NodeId)
+  (childDepth : Nat) (parentIsXor : Bool)
   : DFSState :=
   -- Record this parent edge.
-  let tpc := s.totalParCount.insert childId ((s.totalParCount[childId]?).getD 0 + 1)
-  let xpc := if parentIsXor
-             then s.xorParCount.insert childId ((s.xorParCount[childId]?).getD 0 + 1)
-             else s.xorParCount
-  let s := { s with totalParCount := tpc, xorParCount := xpc }
+  let tpc  := (s.totalParCount[childId]?).getD 0 + 1
+  let xpc  := (s.xorParCount[childId]?).getD 0 + (if parentIsXor then 1 else 0)
+  let d    := min childDepth ((s.mulDepth[childId]?).getD (childDepth + 1))
+  let pars := ((s.parents[childId]?).getD #[]).push parentId
+  let s := { s with
+    totalParCount := s.totalParCount.insert childId tpc
+    xorParCount   := s.xorParCount.insert   childId xpc
+    mulDepth      := s.mulDepth.insert      childId d
+    parents       := s.parents.insert       childId pars }
   -- Recurse only if this is the first visit.
   if s.visited.contains childId then s
   else
     let s := { s with visited := s.visited.insert childId () }
     match dag.kind? childId with
     | some (NodeKind.xorNode ch) =>
-      ch.foldl (fun acc cid => dfsChild dag acc cid true) s
+      ch.foldl (fun acc cid => dfsChild dag acc cid childId d true) s
     | some (NodeKind.andNode ch) =>
-      ch.foldl (fun acc cid => dfsChild dag acc cid false) s
-    | _ => s  -- leaf or const: no children
+      ch.foldl (fun acc cid => dfsChild dag acc cid childId (d + 1) false) s
+    | _ => s -- leaf or const: no children
 
 /-- Starts a DFS from a probe root. -/
 partial def dfsRoot (dag : DAG) (s : DFSState) (rootId : NodeId) : DFSState :=
   if s.visited.contains rootId then s
   else
-    let s := { s with visited := s.visited.insert rootId () }
+    let s := { s with
+      visited  := s.visited.insert rootId ()
+      mulDepth := s.mulDepth.insert rootId 0 }
     match dag.kind? rootId with
     | some (NodeKind.xorNode ch) =>
-      ch.foldl (fun acc cid => dfsChild dag acc cid true) s
+      ch.foldl (fun acc cid => dfsChild dag acc cid rootId 0 true) s
     | some (NodeKind.andNode ch) =>
-      ch.foldl (fun acc cid => dfsChild dag acc cid false) s
+      ch.foldl (fun acc cid => dfsChild dag acc cid rootId 1 false) s
     | _ => s
 
 -- ============================================================
@@ -119,13 +127,19 @@ partial def dfsRoot (dag : DAG) (s : DFSState) (rootId : NodeId) : DFSState :=
     Only `roots`, the two count maps, and `todo` are allocated per probe.
     The underlying `DAG` is shared with the `GlobalDAG` and is not deep-copied. -/
 structure ProbeState where
-  roots         : Array NodeId
+  roots            : Array NodeId
   /-- Number of XOR-node parents per reachable node. -/
-  xorParCount   : HashMap NodeId Nat
+  xorParCount      : HashMap NodeId Nat
   /-- Total parent count per reachable node. -/
-  totalParCount : HashMap NodeId Nat
+  totalParCount    : HashMap NodeId Nat
+  /-- Minimum multiplicative depth of a node. -/
+  mulDepth         : HashMap NodeId Nat
+  /-- Parents of a node. -/
+  parents          : HashMap NodeId (Array NodeId)
   /-- Rewritable random leaves. -/
-  todo          : Array NodeId
+  todo             : Array NodeId
+  /-- XOR nodes that have been rewritten as fresh randoms. -/
+  rewrittenRandoms : HashMap NodeId Unit
 
 namespace ProbeState
 
@@ -133,6 +147,13 @@ namespace ProbeState
 @[inline]
 def isStandalone (ps : ProbeState) (id : NodeId) : Bool :=
   ps.totalParCount[id]? == some 1 && ps.xorParCount[id]? == some 1
+
+@[inline]
+def isRandom (ps : ProbeState) (dag : DAG) (id : NodeId) : Bool :=
+  ps.rewrittenRandoms.contains id ||
+  match dag.kind? id with
+  | some (NodeKind.leaf (VarType.Random _)) => true
+  | _                                       => false
 
 /-- Pretty-printing for debugging. -/
 def pp (ps : ProbeState) (dag : DAG) : String :=
@@ -145,6 +166,15 @@ end ProbeState
 -- ============================================================
 -- Probe initialization
 -- ============================================================
+
+/-- Inserts `r` into `ps.todo` at the position that maintains ascending
+    `mulDepth` order. -/
+def insertTodoByDepth (ps : ProbeState) (r : NodeId) : ProbeState :=
+  let d := (ps.mulDepth[r]?).getD 0
+  -- Find the first existing entry whose depth exceeds d.
+  let pos := (ps.todo.findIdx? (fun rid => (ps.mulDepth[rid]?).getD 0 > d)).getD
+    ps.todo.size -- no random exceeds d
+  { ps with todo := ps.todo.insertIdx! pos r }
 
 /-- Initializes a probe context for the given wire names.
 
@@ -180,14 +210,19 @@ def initProbe (gdag : GlobalDAG) (wireNames : Array String)
   -- Step 3: DFS from all factored roots.
   let s : DFSState := factoredRoots.foldl (dfsRoot gdag.dag) {}
   -- Step 4: collect standalone randoms from the global randoms array.
-  let todo := gdag.dag.randoms.filter fun rId =>
+  let todoUnsorted := gdag.dag.randoms.filter fun rId =>
     s.totalParCount[rId]? == some 1 &&
     s.xorParCount[rId]?   == some 1
+  let todo := todoUnsorted.qsort (fun a b =>
+    (s.mulDepth[a]?).getD 0 < (s.mulDepth[b]?).getD 0)
   return (gdag, {
-    roots         := factoredRoots
-    xorParCount   := s.xorParCount
-    totalParCount := s.totalParCount
-    todo          := todo
+    roots            := factoredRoots
+    xorParCount      := s.xorParCount
+    totalParCount    := s.totalParCount
+    mulDepth         := s.mulDepth
+    parents          := s.parents
+    todo             := todo
+    rewrittenRandoms := {}
   })
 
 /-- Same as above but probes by `NodeId` directly. -/
@@ -196,15 +231,37 @@ def initProbeByIds (gdag : GlobalDAG) (rootIds : Array NodeId)
   let (dag, factoredRoots) := gdag.dag.factor rootIds
   let gdag := { gdag with dag := dag }
   let s : DFSState := factoredRoots.foldl (dfsRoot gdag.dag) {}
-  let todo := gdag.dag.randoms.filter fun rId =>
+  let todoUnsorted := gdag.dag.randoms.filter fun rId =>
     s.totalParCount[rId]? == some 1 &&
     s.xorParCount[rId]?   == some 1
+  let todo := todoUnsorted.qsort (fun a b =>
+    (s.mulDepth[a]?).getD 0 < (s.mulDepth[b]?).getD 0)
   (gdag, {
-    roots         := factoredRoots
-    xorParCount   := s.xorParCount
-    totalParCount := s.totalParCount
-    todo          := todo
+    roots            := factoredRoots
+    xorParCount      := s.xorParCount
+    totalParCount    := s.totalParCount
+    mulDepth         := s.mulDepth
+    parents          := s.parents
+    todo             := todo
+    rewrittenRandoms := {}
   })
+
+-- ============================================================
+-- Check
+-- ============================================================
+
+/-- Considers the probe secure iff:
+    (i) no probe root is itself a secret leaf, and
+    (ii) no secret leaf has a non-zero parent count (reachability). -/
+def isSecure (gdag : GlobalDAG) (ps : ProbeState) : Bool :=
+  ps.roots.all (fun rid => !(gdag.dag.isSecretNode rid)) &&
+  gdag.dag.secrets.all (fun sId => (ps.totalParCount[sId]?).getD 0 == 0)
+
+-- ============================================================
+-- The rewrite
+-- ============================================================
+
+-- TODO
 
 -- ============================================================
 -- Examples

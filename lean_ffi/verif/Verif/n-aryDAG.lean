@@ -35,10 +35,11 @@ open Std (HashMap)
 /-- A hash-consed `𝔽₂`-circuit DAG.
     `∀id : NodeId, intern[nodes[id]] = id ∧ ∀k : NodeKind, nodes[intern[k]] = k`. -/
 structure DAG where
-  nodes  : HashMap NodeId NodeKind := {}
-  intern : HashMap NodeKind NodeId := {}
-  nextId : NodeId                  := 0  -- Q: is it possible to determine IDs in a different way?
-  randoms : Array NodeId           := #[]
+  nodes   : HashMap NodeId NodeKind := {}
+  intern  : HashMap NodeKind NodeId := {}
+  nextId  : NodeId                  := 0  -- Q: is it possible to determine IDs in a different way?
+  randoms : Array NodeId            := #[]
+  secrets : Array NodeId            := #[]
 
 namespace DAG
 
@@ -104,6 +105,12 @@ def internNode (dag : DAG) (k : NodeKind) : DAG × NodeId :=
   | some id => (dag, id)
   | none    => dag.alloc k
 
+@[inline]
+def isSecretNode (dag : DAG) (id : NodeId) : Bool :=
+  match dag.kind? id with
+  | some (NodeKind.leaf (VarType.Secret _)) => true
+  | _                                       => false
+
 -- ============================================================
 -- Flattening
 -- ============================================================
@@ -149,6 +156,7 @@ def mkLeaf (dag : DAG) (v : VarType) : DAG × NodeId :=
     let (dag', id) := dag.alloc k
     match v with
     | VarType.Random _ => ({ dag' with randoms := dag'.randoms.push id }, id)
+    | VarType.Secret _ => ({ dag' with secrets := dag'.secrets.push id }, id)
     | _                => (dag', id)
 
 /-- Builds a canonical XOR node from a pre-normalised child array.
