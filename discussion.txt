@@ -18,6 +18,21 @@ Discuss:
           but references pointing at them are kept in HashMaps, burdening the memory. if reference counting is implemented, this
           can be worked around but that would increase the complexity of factoring and many other procedures (even reference
           rounting is not exactly a solution)
+
+        - the global DAG grows with each probe, and there is not just a memory question but also a computation question. it is
+          usually the case that some of the nodes are factored over and over again. if we could memoize the resulting factoring
+          for some of the nodes we can evade redundant computations.
+
+        - after the DFS worker does its job we do not necessarily require to run `gdag.dag.randoms.fiter`. it is not super cheap
+          and we could have filled in the `todo` while the DFS worker is running.
+
+        - in the DFSState we do not really need to have two hash maps for the parents, we can just have `HashMap NodeId (Nat x Nat)`
+
+        - a similar redundant computation to factoring happens with the DFS worker as well, we can cache parent information for
+          nodes. probably.
+
+        - partial functions are not nice
+
         = flattening, in practice, loses information about cables. is this problematic?
         + yes it is, but we can work around it
 
