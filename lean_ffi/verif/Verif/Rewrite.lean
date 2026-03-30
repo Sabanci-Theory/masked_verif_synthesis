@@ -210,7 +210,8 @@ def initProbe (gdag : GlobalDAG) (wireNames : Array String)
   -- Step 3: DFS from all factored roots.
   let s : DFSState := factoredRoots.foldl (dfsRoot gdag.dag) {}
   -- Step 4: collect standalone randoms from the global randoms array.
-  let todoUnsorted := gdag.dag.randoms.filter fun rId =>
+  let todoUnsorted := gdag.dag.randoms.filter fun rId => -- Q: we filter all the randoms
+                            -- but we can just filter the randoms encountered during DFS
     s.totalParCount[rId]? == some 1 &&
     s.xorParCount[rId]?   == some 1
   let todo := todoUnsorted.qsort (fun a b =>
@@ -255,13 +256,125 @@ def initProbeByIds (gdag : GlobalDAG) (rootIds : Array NodeId)
     (ii) no secret leaf has a non-zero parent count (reachability). -/
 def isSecure (gdag : GlobalDAG) (ps : ProbeState) : Bool :=
   ps.roots.all (fun rid => !(gdag.dag.isSecretNode rid)) &&
-  gdag.dag.secrets.all (fun sId => (ps.totalParCount[sId]?).getD 0 == 0)
+  gdag.dag.secrets.all (fun sid => (ps.totalParCount[sid]?).getD 0 == 0)
+
+-- ============================================================
+-- Parent count update
+-- ============================================================
+
+/-- Decrements the parent count of `nodeId` by one (the parent `wasXor`
+    indicates whether the lost edge was through an XOR gate).
+    If the count reaches zero, cascades to the node's children. -/
+partial def decrementParent (dag : DAG) (ps : ProbeState) (nodeId : NodeId) (wasXor : Bool)
+  : ProbeState :=
+  let tpc := (ps.totalParCount[nodeId]?).getD 0
+  if tpc == 0 then ps  -- already unreachable, so nothing to do
+  else
+    let xpc  := (ps.xorParCount[nodeId]?).getD 0
+    let tpc' := tpc - 1
+    let xpc' := if wasXor && xpc > 0 then xpc - 1 else xpc
+    let ps := { ps with
+      totalParCount := if tpc' == 0 then ps.totalParCount.erase nodeId
+                       else ps.totalParCount.insert nodeId tpc'
+      xorParCount   := if tpc' == 0 then ps.xorParCount.erase nodeId
+                       else ps.xorParCount.insert nodeId xpc' }
+    if tpc' == 0 then
+      -- Remove from todo if present
+      let ps := { ps with todo := ps.todo.filter (· != nodeId) } -- Q!
+      if ps.rewrittenRandoms.contains nodeId then ps
+      else -- Cascade through DAG children unless this node was already rewritten
+        match dag.kind? nodeId with
+        | some (NodeKind.xorNode ch) =>
+          ch.foldl (fun acc cid =>
+            let newPars := ((acc.parents[cid]?).getD #[]).filter (· != nodeId)
+            let acc     := { acc with parents := acc.parents.insert cid newPars }
+            decrementParent dag acc cid true) ps
+        | some (NodeKind.andNode ch) =>
+          ch.foldl (fun acc cid =>
+            let newPars := ((acc.parents[cid]?).getD #[]).filter (· != nodeId)
+            let acc     := { acc with parents := acc.parents.insert cid newPars }
+            decrementParent dag acc cid false) ps
+        | _ => ps  -- leaf, so nothing to cascade
+    else
+      -- The node still reachable.  Check if it just became a standalone random.
+      if ps.isRandom dag nodeId && tpc' == 1 && xpc' == 1 then
+        insertTodoByDepth ps nodeId
+      else ps
 
 -- ============================================================
 -- The rewrite
 -- ============================================================
 
--- TODO
+/-!
+## One rewrite step
+
+Given standalone random `r` with unique XOR parent `x`:
+
+1. Add `x` to `rewrittenRandoms` (x now acts as a fresh random leaf).
+2. Remove `r` from all tracking structures (it has been absorbed into x).
+3. For each sibling `c_i ≠ r` of `r` inside `x`:
+   - Remove `x` from `parents[c_i]`.
+   - Decrement `c_i`'s count (with cascade if it hits zero).
+4. If `x` itself is now standalone (inherited x's original parents, and
+   those counts are (1,1)), enqueue `x` for a future rewrite.
+-/
+
+def applyRewrite (gdag : GlobalDAG) (ps : ProbeState) (r : NodeId)
+  : GlobalDAG × ProbeState :=
+  let x := ((ps.parents[r]?).getD #[])[0]!   -- sole XOR parent of `r`
+  -- Get x's children from the DAG.
+  let xCh := match gdag.dag.kind? x with
+    | some (NodeKind.xorNode ch) => ch
+    | _                          => #[]
+  -- Step 1: mark `x` as a rewritten random.
+  let ps := { ps with rewrittenRandoms := ps.rewrittenRandoms.insert x () }
+  -- Step 2: remove r from all tracking.
+  let ps := { ps with
+    totalParCount := ps.totalParCount.erase r
+    xorParCount   := ps.xorParCount.erase   r
+    mulDepth      := ps.mulDepth.erase      r
+    parents       := ps.parents.erase       r }
+  -- Step 3: disconnect `x` from each sibling `c_i ≠ r` and cascade.
+  let ps := xCh.foldl (fun ps ci =>
+    if ci == r then ps
+    else
+      -- Remove `x` from `c_i`'s parent list.
+      let newPars := ((ps.parents[ci]?).getD #[]).filter (· != x)
+      let ps := { ps with parents := ps.parents.insert ci newPars }
+      -- Decrement `c_i`'s count.
+      decrementParent gdag.dag ps ci true) ps
+  (gdag, ps)
+
+-- ============================================================
+-- Rewrite loop
+-- ============================================================
+
+/-- Repeatedly applies rewrites until the probe is secure or no further rewrites
+    are possible.
+
+    The loop processes `todo` entries from the front (minimum multiplicative
+    depth first). `findIdx?` skips stale entries whose `isStandalone`
+    condition is no longer satisfied. -/
+partial def rewriteLoop (gdag : GlobalDAG) (ps : ProbeState)
+  : GlobalDAG × ProbeState × Bool :=
+  if isSecure gdag ps then (gdag, ps, true)
+  else
+    -- Find the shallowest entry in todo.
+    -- Q: do we really need to findIdx here? can't we just assume todo is correct
+    match ps.todo[0]? with
+    | none   => (gdag, ps, false)   -- no more rewrites available
+    | some r =>
+      -- Remove the consumed entry before rewriting.
+      let ps := { ps with todo := ps.todo.eraseIdx! 0 }
+      let (gdag', ps') := applyRewrite gdag ps r
+      rewriteLoop gdag' ps'
+
+/-- Full probe pipeline: init + rewrite loop.
+    Returns `(updatedGlobalDAG, finalProbeState, probeIsSecure)`. -/
+def checkProbe (gdag : GlobalDAG) (wireNames : Array String)
+    : Except String (GlobalDAG × ProbeState × Bool) := do
+  let (gdag', ps) ← initProbe gdag wireNames
+  return rewriteLoop gdag' ps
 
 -- ============================================================
 -- Examples
@@ -348,7 +461,17 @@ def example4 : IO Unit := do
     | Except.error e     => IO.println s!"Probe {label}: error — {e}"
     | Except.ok (g', ps) => IO.println s!"Probe {label}:\n{ps.pp g'.dag}"
 
+def example4_rewrite : IO Unit := do
+  let g := domAND
+  for probe in [#["w0"], #["w1"], #["w0", "w1"]] do
+    let label := "{" ++ String.intercalate ", " probe.toList ++ "}"
+    match checkProbe g probe with
+    | Except.error e          => IO.println s!"Probe {label}: error — {e}"
+    | Except.ok (g', ps, sec) =>
+        IO.println s!"Probe {label}: secure = {sec}\n{ps.pp g'.dag}"
+
 #eval example4
+#eval example4_rewrite
 
 /-! ## Example 5 — flattening does not harm probing
 
@@ -403,9 +526,9 @@ def example6 : IO Unit := do
   let g := circuit5
   let origRoot := (g.wireId? "w0").get!
   IO.println s!"Original: {g.ppNode origRoot}"
-  match initProbe g #["w0"] with
+  match checkProbe g #["w0"] with
   | Except.error e     => IO.println s!"Error: {e}"
-  | Except.ok (g', ps) => IO.println s!"Probe:\n{ps.pp g'.dag}"
+  | Except.ok (g', ps, sec) => IO.println s!"Probe: secure = {sec}\n{ps.pp g'.dag}"
 
 #eval example6
 
