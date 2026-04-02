@@ -212,8 +212,7 @@ def initProbe (gdag : GlobalDAG) (wireNames : Array String)
   -- Step 4: collect standalone randoms from the global randoms array.
   let todoUnsorted := gdag.dag.randoms.filter fun rId => -- Q: we filter all the randoms
                             -- but we can just filter the randoms encountered during DFS
-    s.totalParCount[rId]? == some 1 &&
-    s.xorParCount[rId]?   == some 1
+    s.totalParCount[rId]? == some 1 && s.xorParCount[rId]?   == some 1
   let todo := todoUnsorted.qsort (fun a b =>
     (s.mulDepth[a]?).getD 0 < (s.mulDepth[b]?).getD 0)
   return (gdag, {
@@ -268,7 +267,7 @@ def isSecure (gdag : GlobalDAG) (ps : ProbeState) : Bool :=
 partial def decrementParent (dag : DAG) (ps : ProbeState) (nodeId : NodeId) (wasXor : Bool)
   : ProbeState :=
   let tpc := (ps.totalParCount[nodeId]?).getD 0
-  if tpc == 0 then ps  -- already unreachable, so nothing to do
+  if tpc == 0 then ps  -- already unreachable, so nothing to do. Q: is this code reachable?
   else
     let xpc  := (ps.xorParCount[nodeId]?).getD 0
     let tpc' := tpc - 1
@@ -280,20 +279,20 @@ partial def decrementParent (dag : DAG) (ps : ProbeState) (nodeId : NodeId) (was
                        else ps.xorParCount.insert nodeId xpc' }
     if tpc' == 0 then
       -- Remove from todo if present
-      let ps := { ps with todo := ps.todo.filter (· != nodeId) } -- Q!
+      let ps := { ps with todo := ps.todo.filter (· != nodeId) } -- Q: (!)
       if ps.rewrittenRandoms.contains nodeId then ps
       else -- Cascade through DAG children unless this node was already rewritten
         match dag.kind? nodeId with
         | some (NodeKind.xorNode ch) =>
           ch.foldl (fun acc cid =>
-            let newPars := ((acc.parents[cid]?).getD #[]).filter (· != nodeId)
-            let acc     := { acc with parents := acc.parents.insert cid newPars }
-            decrementParent dag acc cid true) ps
+            let ps' := { acc with parents :=
+                         acc.parents.insert cid (((acc.parents[cid]?).getD #[]).filter (· != nodeId)) }
+            decrementParent dag ps' cid true) ps
         | some (NodeKind.andNode ch) =>
           ch.foldl (fun acc cid =>
-            let newPars := ((acc.parents[cid]?).getD #[]).filter (· != nodeId)
-            let acc     := { acc with parents := acc.parents.insert cid newPars }
-            decrementParent dag acc cid false) ps
+            let ps' := { acc with parents :=
+                         acc.parents.insert cid (((acc.parents[cid]?).getD #[]).filter (· != nodeId)) }
+            decrementParent dag ps' cid false) ps
         | _ => ps  -- leaf, so nothing to cascade
     else
       -- The node still reachable.  Check if it just became a standalone random.
@@ -359,8 +358,6 @@ partial def rewriteLoop (gdag : GlobalDAG) (ps : ProbeState)
   : GlobalDAG × ProbeState × Bool :=
   if isSecure gdag ps then (gdag, ps, true)
   else
-    -- Find the shallowest entry in todo.
-    -- Q: do we really need to findIdx here? can't we just assume todo is correct
     match ps.todo[0]? with
     | none   => (gdag, ps, false)   -- no more rewrites available
     | some r =>
@@ -375,6 +372,12 @@ def checkProbe (gdag : GlobalDAG) (wireNames : Array String)
     : Except String (GlobalDAG × ProbeState × Bool) := do
   let (gdag', ps) ← initProbe gdag wireNames
   return rewriteLoop gdag' ps
+
+-- ============================================================
+-- Witness production
+-- ============================================================
+
+
 
 -- ============================================================
 -- Examples
