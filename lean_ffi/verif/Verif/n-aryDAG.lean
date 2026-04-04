@@ -39,6 +39,7 @@ structure DAG where
   intern : HashMap NodeKind NodeId := {}
   nextId : NodeId                  := 0  -- Q: is it possible to determine IDs in a different way?
   randoms : Array NodeId           := #[]
+  secrets : Array NodeId           := #[]
 
 namespace DAG
 
@@ -104,6 +105,13 @@ def internNode (dag : DAG) (k : NodeKind) : DAG × NodeId :=
   | some id => (dag, id)
   | none    => dag.alloc k
 
+@[inline]
+def isSecretNode (dag : DAG) (id : NodeId) : Bool :=
+  match dag.kind? id with
+  | some (NodeKind.leaf (VarType.Secret _)) => true
+  | _                                       => false
+
+
 -- ============================================================
 -- Flattening
 -- ============================================================
@@ -149,6 +157,7 @@ def mkLeaf (dag : DAG) (v : VarType) : DAG × NodeId :=
     let (dag', id) := dag.alloc k
     match v with
     | VarType.Random _ => ({ dag' with randoms := dag'.randoms.push id }, id)
+    | VarType.Secret _ => ({ dag' with secrets := dag'.secrets.push id }, id)
     | _                => (dag', id)
 
 /-- Builds a canonical XOR node from a pre-normalised child array.
@@ -310,7 +319,7 @@ end DAG
 -- Example
 -- ============================================================
 
-def example1 : IO Unit :=
+def example0 : IO Unit :=
   let dag : DAG := {}
   let (dag, e)  := dag.mkLeaf (VarType.Public "e")
   let (dag, a)  := dag.mkLeaf (VarType.Secret "a")
@@ -331,6 +340,6 @@ def example1 : IO Unit :=
   let (dag', fac) := dag.factor #[root]
   IO.println s!"{dag.ppNode root}\n{dag'.ppNode fac[0]!}\n{w == ar0}"
 
-#eval example1
+#eval example0
 
 end verif
