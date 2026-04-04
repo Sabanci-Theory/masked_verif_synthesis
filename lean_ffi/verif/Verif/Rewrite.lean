@@ -140,6 +140,8 @@ structure ProbeState where
   todo             : Array NodeId
   /-- XOR nodes that have been rewritten as fresh randoms. -/
   rewrittenRandoms : HashMap NodeId Unit
+  /-- Record of rewritten randoms, in order. -/
+  rewriteHistory   : Array (NodeId × Array NodeId)
 
 namespace ProbeState
 
@@ -223,6 +225,7 @@ def initProbe (gdag : GlobalDAG) (wireNames : Array String)
     parents          := s.parents
     todo             := todo
     rewrittenRandoms := {}
+    rewriteHistory   := #[]
   })
 
 /-- Same as above but probes by `NodeId` directly. -/
@@ -244,6 +247,7 @@ def initProbeByIds (gdag : GlobalDAG) (rootIds : Array NodeId)
     parents          := s.parents
     todo             := todo
     rewrittenRandoms := {}
+    rewriteHistory   := #[]
   })
 
 -- ============================================================
@@ -326,22 +330,22 @@ def applyRewrite (gdag : GlobalDAG) (ps : ProbeState) (r : NodeId)
     | some (NodeKind.xorNode ch) => ch
     | _                          => #[]
   -- Step 1: mark `x` as a rewritten random.
-  let ps := { ps with rewrittenRandoms := ps.rewrittenRandoms.insert x () }
-  -- Step 2: remove r from all tracking.
+  let siblings := xCh.filter (· != r)
   let ps := { ps with
+    rewrittenRandoms := ps.rewrittenRandoms.insert x ()
+    rewriteHistory   := ps.rewriteHistory.push (r, siblings)
+    -- Step 2: remove r from all tracking.
     totalParCount := ps.totalParCount.erase r
     xorParCount   := ps.xorParCount.erase   r
     mulDepth      := ps.mulDepth.erase      r
     parents       := ps.parents.erase       r }
   -- Step 3: disconnect `x` from each sibling `c_i ≠ r` and cascade.
-  let ps := xCh.foldl (fun ps ci =>
-    if ci == r then ps
-    else
-      -- Remove `x` from `c_i`'s parent list.
-      let newPars := ((ps.parents[ci]?).getD #[]).filter (· != x)
-      let ps := { ps with parents := ps.parents.insert ci newPars }
-      -- Decrement `c_i`'s count.
-      decrementParent gdag.dag ps ci true) ps
+  let ps := siblings.foldl (fun ps ci =>
+    -- Remove `x` from `c_i`'s parent list.
+    let newPars := ((ps.parents[ci]?).getD #[]).filter (· != x)
+    let ps := { ps with parents := ps.parents.insert ci newPars }
+    -- Decrement `c_i`'s count.
+    decrementParent gdag.dag ps ci true) ps
   (gdag, ps)
 
 -- ============================================================
@@ -377,13 +381,78 @@ def checkProbe (gdag : GlobalDAG) (wireNames : Array String)
 -- Witness production
 -- ============================================================
 
+/-- Deep copies a node, priming variables and substituting randoms based on `W`. -/
+partial def substPrime (dag : DAG) (W : HashMap NodeId NodeId) (memo : HashMap NodeId NodeId) (id : NodeId)
+  : DAG × HashMap NodeId NodeId × NodeId :=
+  if let some res := memo[id]? then (dag, memo, res)
+  else match dag.kind? id with
+    | some (NodeKind.leaf (VarType.Random _)) =>
+      -- If the random has a computed witness in W, use it.
+      -- Otherwise, it's an unrewritten random, so it just maps to itself (r' = r).
+      let res := (W[id]?).getD id
+      (dag, memo.insert id res, res)
 
+    | some (NodeKind.leaf v) =>
+      let v' := match v with
+        | VarType.Secret s => VarType.Secret (s ++ "'")
+        | VarType.Public p => VarType.Public (p ++ "'")
+        | _                => v
+      let (dag', res) := dag.mkLeaf v'
+      (dag', memo.insert id res, res)
+
+    | some (NodeKind.constVal b) =>
+      let (dag', res) := dag.mkConst b
+      (dag', memo.insert id res, res)
+
+    | some (NodeKind.xorNode ch) =>
+      let (dag', memo', ch') := ch.foldl (fun (d, m, acc) cid =>
+        let (d', m', cid') := substPrime d W m cid
+        (d', m', acc.push cid')) (dag, memo, #[])
+      let (dag'', res) := dag'.mkXor ch'
+      (dag'', memo'.insert id res, res)
+
+    | some (NodeKind.andNode ch) =>
+      let (dag', memo', ch') := ch.foldl (fun (d, m, acc) cid =>
+        let (d', m', cid') := substPrime d W m cid
+        (d', m', acc.push cid')) (dag, memo, #[])
+      let (dag'', res) := dag'.mkAnd ch'
+      (dag'', memo'.insert id res, res)
+
+    | none => (dag, memo, id)
+
+/-- Generates the witness coupling function for a secure probe.
+    Returns the updated DAG and a map from original random NodeId to its witness NodeId. -/
+def buildWitness (gdag : GlobalDAG) (ps : ProbeState) : GlobalDAG × HashMap NodeId NodeId :=
+  -- Fold over the history in reverse chronological order
+  let (dagFinal, WFinal) := ps.rewriteHistory.reverse.foldl (fun (dag, W) (r, siblings) =>
+    -- 1. e = XOR of the siblings
+    let (dag1, e_id) := dag.mkXor siblings
+    -- 2. e' = primed version of E (substituting known witnesses)
+    -- We use a fresh memo for each rewrite step to ensure W updates take effect.
+    let (dag2, _, e_prime_id) := substPrime dag1 W {} e_id
+    -- 3. r' = e' + e + r
+    let (dag3, witness_id) := dag2.mkXor #[e_prime_id, e_id, r]
+    -- Store the computed witness for this random
+    (dag3, W.insert r witness_id)) (gdag.dag, {})
+  ({ gdag with dag := dagFinal }, WFinal)
+
+-- ============================================================
+-- Witness Formatting
+-- ============================================================
+
+/-- Formats the witness map into a readable multiline string. -/
+def ppWitness (gdag : GlobalDAG) (W : HashMap NodeId NodeId) : String :=
+  if W.isEmpty then "  Witness: None generated (no rewrites applied)"
+  else
+    let lines := W.toList.map fun (origId, witId) =>
+      s!"    {gdag.dag.ppNode origId}' := {gdag.dag.ppNode witId}"
+    "  Witness:\n" ++ String.intercalate "\n" lines
 
 -- ============================================================
 -- Examples
 -- ============================================================
 
-/-! ## Example 2 — r0 is rewritable when probing one wire but not two
+/-! ## Example 1 — r0 is rewritable when probing one wire but not two
 
     Circuit:
       w1 = e * a + r0
@@ -401,17 +470,21 @@ def circuit1 : GlobalDAG :=
   let (g, w2) := g.mkXor  #[eb, r0]
   (g.addWire "w1" w1).addWire "w2" w2
 
-def example2 : IO Unit := do
+def example1 : IO Unit := do
   let g := circuit1
   for probe in [#["w1"], #["w2"], #["w1", "w2"]] do
     let label := "{" ++ String.intercalate ", " probe.toList ++ "}"
-    match initProbe g probe with
-    | Except.error e     => IO.println s!"Probe {label}: error — {e}"
-    | Except.ok (g', ps) => IO.println s!"Probe {label}:\n{ps.pp g'.dag}"
+    match checkProbe g probe with
+    | Except.error e          => IO.println s!"Probe {label}: error — {e}"
+    | Except.ok (g', ps, sec) =>
+        IO.println s!"Probe {label}: secure = {sec}\n{ps.pp g'.dag}"
+        if sec then
+          let (g'', W) := buildWitness g' ps
+          IO.println (ppWitness g'' W)
 
-#eval example2
+#eval example1
 
-/-! ## Example 3 — factoring
+/-! ## Example 2 — factoring
 
     Circuit:
       w = e * a + e * b + r0
@@ -427,17 +500,21 @@ def circuit2 : GlobalDAG :=
   let (g, w)  := g.mkXor #[ea, eb, r0]
   g.addWire "w" w
 
-def example3 : IO Unit := do
+def example2 : IO Unit := do
   let g := circuit2
   let origRoot := (g.wireId? "w").get!
   IO.println s!"Original: {g.ppNode origRoot}"
-  match initProbe g #["w"] with
-  | Except.error e     => IO.println s!"Error: {e}"
-  | Except.ok (g', ps) => IO.println s!"Probe:\n{ps.pp g'.dag}"
+  match checkProbe g #["w"] with
+  | Except.error e          => IO.println s!"Error: {e}"
+  | Except.ok (g', ps, sec) =>
+      IO.println s!"Probe w: secure = {sec}\n{ps.pp g'.dag}"
+      if sec then
+        let (g'', W) := buildWitness g' ps
+        IO.println (ppWitness g'' W)
 
-#eval example3
+#eval example2
 
-/-! ## Example 4 — 2 share DOM-AND gate
+/-! ## Example 3 — 2 share DOM-AND gate
 
     s0 = a0*b0 + a0*b1 + r,  s1 = a1*b0 + a1*b1 + r
 -/
@@ -456,7 +533,7 @@ def domAND : GlobalDAG :=
   let (g, s1)   := g.mkXor #[a1b0, a1b1, r]
   (g.addWire "w0" s0).addWire "w1" s1
 
-def example4 : IO Unit := do
+def example3 : IO Unit := do
   let g := domAND
   for probe in [#["w0"], #["w1"], #["w0", "w1"]] do
     let label := "{" ++ String.intercalate ", " probe.toList ++ "}"
@@ -464,7 +541,7 @@ def example4 : IO Unit := do
     | Except.error e     => IO.println s!"Probe {label}: error — {e}"
     | Except.ok (g', ps) => IO.println s!"Probe {label}:\n{ps.pp g'.dag}"
 
-def example4_rewrite : IO Unit := do
+def example3_rewrite : IO Unit := do
   let g := domAND
   for probe in [#["w0"], #["w1"], #["w0", "w1"]] do
     let label := "{" ++ String.intercalate ", " probe.toList ++ "}"
@@ -472,11 +549,14 @@ def example4_rewrite : IO Unit := do
     | Except.error e          => IO.println s!"Probe {label}: error — {e}"
     | Except.ok (g', ps, sec) =>
         IO.println s!"Probe {label}: secure = {sec}\n{ps.pp g'.dag}"
+        if sec then
+          let (g'', W) := buildWitness g' ps
+          IO.println (ppWitness g'' W)
 
-#eval example4
-#eval example4_rewrite
+#eval example3
+#eval example3_rewrite
 
-/-! ## Example 5 — flattening does not harm probing
+/-! ## Example 4 — flattening does not harm probing
 
     Circuit:
       w1 = a + r0
@@ -493,17 +573,21 @@ def circuit4 : GlobalDAG :=
   let (g, w4) := g.mkXor #[w3, r1]
   ((g.addWire "w1" w1).addWire "w3" w3).addWire "w4" w4
 
-def example5 : IO Unit := do
+def example4 : IO Unit := do
   let g := circuit4
   for probe in [#["w1"], #["w3"], #["w4"], #["w3", "w4"]] do
     let label := "{" ++ String.intercalate ", " probe.toList ++ "}"
-    match initProbe g probe with
-    | Except.error e     => IO.println s!"Probe {label}: error — {e}"
-    | Except.ok (g', ps) => IO.println s!"Probe {label}:\n{ps.pp g'.dag}"
+    match checkProbe g probe with
+    | Except.error e          => IO.println s!"Probe {label}: error — {e}"
+    | Except.ok (g', ps, sec) =>
+        IO.println s!"Probe {label}: secure = {sec}\n{ps.pp g'.dag}"
+        if sec then
+          let (g'', W) := buildWitness g' ps
+          IO.println (ppWitness g'' W)
 
-#eval example5
+#eval example4
 
-/-! ## Example 6 — Q_12^4
+/-! ## Example 5 — Q_12^4
 
     s0 = (a + r0)*(b + r1) + (a + r0)*(c + r2) + (c + r2) + (a + r0)*(r1) + (a + r0)*(r2)
 -/
@@ -525,13 +609,47 @@ def circuit5 : GlobalDAG :=
   let (g, root) := g.mkXor #[t1, t2, cr2, t3, t4]
   g.addWire "w0" root
 
-def example6 : IO Unit := do
+def example5 : IO Unit := do
   let g := circuit5
   let origRoot := (g.wireId? "w0").get!
   IO.println s!"Original: {g.ppNode origRoot}"
   match checkProbe g #["w0"] with
-  | Except.error e     => IO.println s!"Error: {e}"
-  | Except.ok (g', ps, sec) => IO.println s!"Probe: secure = {sec}\n{ps.pp g'.dag}"
+  | Except.error e          => IO.println s!"Error: {e}"
+  | Except.ok (g', ps, sec) =>
+      IO.println s!"Probe: secure = {sec}\n{ps.pp g'.dag}"
+      if sec then
+        let (g'', W) := buildWitness g' ps
+        IO.println (ppWitness g'' W)
+
+#eval example5
+
+/-! ## Example 6
+
+    w1 = r0 + r1 + a
+    w2 = r1 + r2 + b
+-/
+def circuit6 : GlobalDAG :=
+  let g : GlobalDAG := {}
+  let (g, a)  := g.mkLeaf (VarType.Secret "a")
+  let (g, b)  := g.mkLeaf (VarType.Secret "b")
+  let (g, r0) := g.mkLeaf (VarType.Random "r0")
+  let (g, r1) := g.mkLeaf (VarType.Random "r1")
+  let (g, r2) := g.mkLeaf (VarType.Random "r2")
+  let (g, w0) := g.mkXor #[r0, r1, a]
+  let (g, w1) := g.mkXor #[r1, r2, b]
+  (g.addWire "w0" w0).addWire "w1" w1
+
+def example6 : IO Unit := do
+  let g := circuit6
+  for probe in [#["w0"], #["w1"], #["w0", "w1"]] do
+    let label := "{" ++ String.intercalate ", " probe.toList ++ "}"
+    match checkProbe g probe with
+    | Except.error e          => IO.println s!"Probe {label}: error — {e}"
+    | Except.ok (g', ps, sec) =>
+        IO.println s!"Probe {label}: secure = {sec}\n{ps.pp g'.dag}"
+        if sec then
+          let (g'', W) := buildWitness g' ps
+          IO.println (ppWitness g'' W)
 
 #eval example6
 
