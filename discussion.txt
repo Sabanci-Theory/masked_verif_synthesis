@@ -36,10 +36,20 @@ Discuss:
         = flattening, in practice, loses information about cables. is this problematic?
         + yes it is, but we can work around it
 
+    * The proposed degree 2 completeness is also not correct.
+        - here is a counterexample: f(s, r_1, r_2, r_3, r_4) = s * r_1 + r_1 * r_2 + r_3 * r_4
+
 = is there a difference between factoring from top-to-bottom and bottom-to-top?
 + yes there is, but for our purposes it is not clear if one has an edge over the other.
 
 = some more documentation is needed
-+ source code is thoroughly documented, a README is on its way
++ source code is thoroughly documented
 
 = rewrites first and then factoring, probably
+
+Note to self:
+          rewriting is confluent
+          completeness attained only in linear/affine cases
+            
+          probe enumeration
+          creating the full pipeline for the tool
