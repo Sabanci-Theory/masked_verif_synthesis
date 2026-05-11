@@ -374,16 +374,10 @@ def checkProbe (gdag : GlobalDAG) (wireNames : Array String)
   return rewriteLoop gdag' ps
 
 -- ============================================================
--- Witness production
--- ============================================================
-
-
-
--- ============================================================
 -- Examples
 -- ============================================================
 
-/-! ## Example 2 — r0 is rewritable when probing one wire but not two
+/-! ## Example 1 — r0 is rewritable when probing one wire but not two
 
     Circuit:
       w1 = e * a + r0
@@ -401,7 +395,7 @@ def circuit1 : GlobalDAG :=
   let (g, w2) := g.mkXor  #[eb, r0]
   (g.addWire "w1" w1).addWire "w2" w2
 
-def example2 : IO Unit := do
+def example1 : IO Unit := do
   let g := circuit1
   for probe in [#["w1"], #["w2"], #["w1", "w2"]] do
     let label := "{" ++ String.intercalate ", " probe.toList ++ "}"
@@ -409,9 +403,9 @@ def example2 : IO Unit := do
     | Except.error e     => IO.println s!"Probe {label}: error — {e}"
     | Except.ok (g', ps) => IO.println s!"Probe {label}:\n{ps.pp g'.dag}"
 
-#eval example2
+#eval example1
 
-/-! ## Example 3 — factoring
+/-! ## Example 2 — factoring
 
     Circuit:
       w = e * a + e * b + r0
@@ -427,7 +421,7 @@ def circuit2 : GlobalDAG :=
   let (g, w)  := g.mkXor #[ea, eb, r0]
   g.addWire "w" w
 
-def example3 : IO Unit := do
+def example2 : IO Unit := do
   let g := circuit2
   let origRoot := (g.wireId? "w").get!
   IO.println s!"Original: {g.ppNode origRoot}"
@@ -435,9 +429,9 @@ def example3 : IO Unit := do
   | Except.error e     => IO.println s!"Error: {e}"
   | Except.ok (g', ps) => IO.println s!"Probe:\n{ps.pp g'.dag}"
 
-#eval example3
+#eval example2
 
-/-! ## Example 4 — 2 share DOM-AND gate
+/-! ## Example 3 — 2 share DOM-AND gate
 
     s0 = a0*b0 + a0*b1 + r,  s1 = a1*b0 + a1*b1 + r
 -/
@@ -456,7 +450,7 @@ def domAND : GlobalDAG :=
   let (g, s1)   := g.mkXor #[a1b0, a1b1, r]
   (g.addWire "w0" s0).addWire "w1" s1
 
-def example4 : IO Unit := do
+def example3 : IO Unit := do
   let g := domAND
   for probe in [#["w0"], #["w1"], #["w0", "w1"]] do
     let label := "{" ++ String.intercalate ", " probe.toList ++ "}"
@@ -464,7 +458,7 @@ def example4 : IO Unit := do
     | Except.error e     => IO.println s!"Probe {label}: error — {e}"
     | Except.ok (g', ps) => IO.println s!"Probe {label}:\n{ps.pp g'.dag}"
 
-def example4_rewrite : IO Unit := do
+def example3_rewrite : IO Unit := do
   let g := domAND
   for probe in [#["w0"], #["w1"], #["w0", "w1"]] do
     let label := "{" ++ String.intercalate ", " probe.toList ++ "}"
@@ -473,10 +467,10 @@ def example4_rewrite : IO Unit := do
     | Except.ok (g', ps, sec) =>
         IO.println s!"Probe {label}: secure = {sec}\n{ps.pp g'.dag}"
 
-#eval example4
-#eval example4_rewrite
+#eval example3
+#eval example3_rewrite
 
-/-! ## Example 5 — flattening does not harm probing
+/-! ## Example 4 — flattening does not harm probing
 
     Circuit:
       w1 = a + r0
@@ -493,7 +487,7 @@ def circuit4 : GlobalDAG :=
   let (g, w4) := g.mkXor #[w3, r1]
   ((g.addWire "w1" w1).addWire "w3" w3).addWire "w4" w4
 
-def example5 : IO Unit := do
+def example4 : IO Unit := do
   let g := circuit4
   for probe in [#["w1"], #["w3"], #["w4"], #["w3", "w4"]] do
     let label := "{" ++ String.intercalate ", " probe.toList ++ "}"
@@ -501,9 +495,9 @@ def example5 : IO Unit := do
     | Except.error e     => IO.println s!"Probe {label}: error — {e}"
     | Except.ok (g', ps) => IO.println s!"Probe {label}:\n{ps.pp g'.dag}"
 
-#eval example5
+#eval example4
 
-/-! ## Example 6 — Q_12^4
+/-! ## Example 5 — Q_12^4
 
     s0 = (a + r0)*(b + r1) + (a + r0)*(c + r2) + (c + r2) + (a + r0)*(r1) + (a + r0)*(r2)
 -/
@@ -525,7 +519,7 @@ def circuit5 : GlobalDAG :=
   let (g, root) := g.mkXor #[t1, t2, cr2, t3, t4]
   g.addWire "w0" root
 
-def example6 : IO Unit := do
+def example5 : IO Unit := do
   let g := circuit5
   let origRoot := (g.wireId? "w0").get!
   IO.println s!"Original: {g.ppNode origRoot}"
@@ -533,6 +527,6 @@ def example6 : IO Unit := do
   | Except.error e     => IO.println s!"Error: {e}"
   | Except.ok (g', ps, sec) => IO.println s!"Probe: secure = {sec}\n{ps.pp g'.dag}"
 
-#eval example6
+#eval example5
 
 end verif

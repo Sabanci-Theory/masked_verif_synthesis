@@ -318,7 +318,7 @@ end DAG
 -- Example
 -- ============================================================
 
-def example1 : IO Unit :=
+def example0 : IO Unit :=
   let dag : DAG := {}
   let (dag, e)  := dag.mkLeaf (VarType.Public "e")
   let (dag, a)  := dag.mkLeaf (VarType.Secret "a")
@@ -339,6 +339,6 @@ def example1 : IO Unit :=
   let (dag', fac) := dag.factor #[root]
   IO.println s!"{dag.ppNode root}\n{dag'.ppNode fac[0]!}\n{w == ar0}"
 
-#eval example1
+#eval example0
 
 end verif
