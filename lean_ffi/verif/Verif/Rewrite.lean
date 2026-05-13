@@ -6,67 +6,196 @@ namespace verif
 open Std (HashMap)
 
 /-!
-# Global DAG, Probe State, and Rewritable Random Detection
+# Wire-Level Circuit, Global DAG, Probe State, and Rewriting
 -/
 
 -- ============================================================
--- Global DAG
+-- Wire-level types
 -- ============================================================
 
-/-- The global DAG representing a circuit.
-    `dag`   — hash-consed nodes.
-    `wires` — maps wire name → `NodeId`. -/
+/-- One input to a wire's defining gate. -/
+inductive WireInput where
+  | leaf  : VarType → WireInput
+  | wire  : String  → WireInput
+  | const : Bool    → WireInput
+  deriving Repr, DecidableEq, Hashable, Inhabited
+
+/-- The defining gate of a wire.  A single-input XOR is the "alias" case
+    (the wire equals its single input). -/
+inductive WireDef where
+  | xor : Array WireInput → WireDef
+  | and : Array WireInput → WireDef
+  deriving Repr, Inhabited
+
+namespace WireDef
+
+@[inline]
+def inputs : WireDef → Array WireInput
+  | WireDef.xor i => i
+  | WireDef.and i => i
+
+@[inline]
+def isXor : WireDef → Bool
+  | WireDef.xor _ => true
+  | WireDef.and _ => false
+
+end WireDef
+
+/-- A wire-level netlist. -/
+structure Circuit where
+  wireOrder : Array String           := #[]
+  wireDefs  : HashMap String WireDef := {}
+  deriving Inhabited
+
+namespace Circuit
+
+@[inline]
+def hasWire (c : Circuit) (name : String) : Bool :=
+  c.wireDefs.contains name
+
+def addWire (c : Circuit) (name : String) (d : WireDef) : Circuit :=
+  if c.hasWire name then c
+  else { c with
+    wireOrder := c.wireOrder.push name
+    wireDefs  := c.wireDefs.insert name d }
+
+/-- Reverse dependency index: for each wire `w`, the list of wires whose
+    `WireDef` references `w` as an input.  Useful for an incremental
+    closure worklist algorithm. -/
+def buildReverseDeps (c : Circuit) : HashMap String (Array String) :=
+  c.wireDefs.fold (fun acc name d =>
+    d.inputs.foldl (fun acc inp =>
+      match inp with
+      | WireInput.wire target =>
+        let cur := (acc[target]?).getD #[]
+        if cur.contains name then acc
+        else acc.insert target (cur.push name)
+      | _ => acc) acc)
+    {}
+
+def ppWireInput : WireInput → String
+  | WireInput.leaf (VarType.Secret s) => s
+  | WireInput.leaf (VarType.Random r) => r
+  | WireInput.leaf (VarType.Public p) => s!"p({p})"
+  | WireInput.wire name               => name
+  | WireInput.const true              => "1"
+  | WireInput.const false             => "0"
+
+def ppWireDef (d : WireDef) : String :=
+  let parts := d.inputs.toList.map ppWireInput
+  let sep := if d.isXor then " + " else " * "
+  String.intercalate sep parts
+
+def ppCircuit (c : Circuit) : String :=
+  String.intercalate "\n" (c.wireOrder.toList.map fun name =>
+    match c.wireDefs[name]? with
+    | some d => s!"  {name} = {ppWireDef d}"
+    | none   => s!"  {name} = ??")
+
+end Circuit
+
+-- ============================================================
+-- Global DAG (Circuit + DAG + bridge)
+-- ============================================================
+
 structure GlobalDAG where
-  dag   : DAG                   := {}
-  wires : HashMap String NodeId := {}
+  dag     : DAG                   := {}
+  circuit : Circuit               := {}
+  wires   : HashMap String NodeId := {}
+  deriving Inhabited
 
 namespace GlobalDAG
 
-/-- Registers `id` as the root of wire `name`. -/
+-- low-level DAG access
+
 @[inline]
-def addWire (gdag : GlobalDAG) (name : String) (id : NodeId) : GlobalDAG :=
-  { gdag with wires := gdag.wires.insert name id }
+def addWire (g : GlobalDAG) (name : String) (id : NodeId) : GlobalDAG :=
+  { g with wires := g.wires.insert name id }
 
-/-- Looks up a wire's `NodeId`. -/
 @[inline]
-def wireId? (gdag : GlobalDAG) (name : String) : Option NodeId :=
-  gdag.wires[name]?
+def wireId? (g : GlobalDAG) (name : String) : Option NodeId :=
+  g.wires[name]?
 
-def mkLeaf (gdag : GlobalDAG) (v : VarType) : GlobalDAG × NodeId :=
-  let (d, id) := gdag.dag.mkLeaf v
-  ({ gdag with dag := d }, id)
+def mkLeaf (g : GlobalDAG) (v : VarType) : GlobalDAG × NodeId :=
+  let (d, id) := g.dag.mkLeaf v
+  ({ g with dag := d }, id)
 
-def mkXor (gdag : GlobalDAG) (ids : Array NodeId) : GlobalDAG × NodeId :=
-  let (d, id) := gdag.dag.mkXor ids
-  ({ gdag with dag := d }, id)
+def mkXor (g : GlobalDAG) (ids : Array NodeId) : GlobalDAG × NodeId :=
+  let (d, id) := g.dag.mkXor ids
+  ({ g with dag := d }, id)
 
-def mkAnd (gdag : GlobalDAG) (ids : Array NodeId) : GlobalDAG × NodeId :=
-  let (d, id) := gdag.dag.mkAnd ids
-  ({ gdag with dag := d }, id)
+def mkAnd (g : GlobalDAG) (ids : Array NodeId) : GlobalDAG × NodeId :=
+  let (d, id) := g.dag.mkAnd ids
+  ({ g with dag := d }, id)
 
-def mkConst (gdag : GlobalDAG) (b : Bool) : GlobalDAG × NodeId :=
-  let (d, id) := gdag.dag.mkConst b
-  ({ gdag with dag := d }, id)
+def mkConst (g : GlobalDAG) (b : Bool) : GlobalDAG × NodeId :=
+  let (d, id) := g.dag.mkConst b
+  ({ g with dag := d }, id)
 
-def ppNode (gdag : GlobalDAG) (id : NodeId) : String :=
-  gdag.dag.ppNode id
+@[inline]
+def ppNode (g : GlobalDAG) (id : NodeId) : String :=
+  g.dag.ppNode id
+
+-- high-level circuit-building API
+
+/-- Resolve a `WireInput` to a NodeId, allocating in the DAG as needed.
+    Wire references panic if the wire is undeclared. -/
+def resolveInput (g : GlobalDAG) (inp : WireInput) : GlobalDAG × NodeId :=
+  match inp with
+  | WireInput.leaf v  =>
+    let (d, id) := g.dag.mkLeaf v
+    ({ g with dag := d }, id)
+  | WireInput.const b =>
+    let (d, id) := g.dag.mkConst b
+    ({ g with dag := d }, id)
+  | WireInput.wire name =>
+    match g.wires[name]? with
+    | some id => (g, id)
+    | none    => panic! s!"resolveInput: undefined wire '{name}'"
+
+/-- Resolve every input in order. -/
+def resolveInputs (g : GlobalDAG) (inputs : Array WireInput) : GlobalDAG × Array NodeId :=
+  inputs.foldl (fun (g, acc) inp =>
+    let (g, id) := g.resolveInput inp
+    (g, acc.push id))
+    (g, #[])
+
+/-- Declare a wire `name = XOR(inputs)`.  Records the WireDef in the Circuit,
+    builds the corresponding DAG node, and registers wire→NodeId. -/
+def addWireXor (g : GlobalDAG) (name : String) (inputs : Array WireInput) : GlobalDAG :=
+  if g.circuit.hasWire name then g
+  else
+    let (g, ids) := g.resolveInputs inputs
+    let (dag, nid) := g.dag.mkXor ids
+    { g with dag     := dag
+             wires   := g.wires.insert name nid
+             circuit := g.circuit.addWire name (WireDef.xor inputs) }
+
+/-- Declare a wire `name = AND(inputs)`. -/
+def addWireAnd (g : GlobalDAG) (name : String) (inputs : Array WireInput) : GlobalDAG :=
+  if g.circuit.hasWire name then g
+  else
+    let (g, ids) := g.resolveInputs inputs
+    let (dag, nid) := g.dag.mkAnd ids
+    { g with dag     := dag
+             wires   := g.wires.insert name nid
+             circuit := g.circuit.addWire name (WireDef.and inputs) }
+
+/-- Factor the expression of every registered wire, updating `g.wires` to
+    point at the factored root NodeIds.  Idempotent in practice: rerunning
+    on the same wires allocates no new DAG nodes. -/
+def factorAllWires (g : GlobalDAG) : GlobalDAG :=
+  g.wires.fold (fun g name oldId =>
+    let (dag', newId) := g.dag.factorNode oldId
+    { g with dag := dag', wires := g.wires.insert name newId })
+    g
 
 end GlobalDAG
 
 -- ============================================================
--- DFS for parent tracking
+-- DFS, Probe State, rewrite engine
 -- ============================================================
 
-/-!
-### DFS
-
-The DFS worker visits each node's children at most once (`visited`).
-
-`totalParCount[n]` equals the number of distinct nodes in the
-probe context that directly reference `n`, which is the "fan-in".
--/
-
-/-- Accumulated state during the DFS. -/
 structure DFSState where
   xorParCount   : HashMap NodeId Nat            := {}
   totalParCount : HashMap NodeId Nat            := {}
@@ -74,11 +203,8 @@ structure DFSState where
   parents       : HashMap NodeId (Array NodeId) := {}
   visited       : HashMap NodeId Unit           := {}
 
-/-- Processes one edge `parent → childId`. -/
-partial def dfsChild (dag : DAG) (s : DFSState) (childId : NodeId) (parentId : NodeId)
-  (childDepth : Nat) (parentIsXor : Bool)
-  : DFSState :=
-  -- Record this parent edge.
+partial def dfsChild (dag : DAG) (s : DFSState) (childId parentId : NodeId)
+    (childDepth : Nat) (parentIsXor : Bool) : DFSState :=
   let tpc  := (s.totalParCount[childId]?).getD 0 + 1
   let xpc  := (s.xorParCount[childId]?).getD 0 + (if parentIsXor then 1 else 0)
   let d    := min childDepth ((s.mulDepth[childId]?).getD (childDepth + 1))
@@ -88,18 +214,16 @@ partial def dfsChild (dag : DAG) (s : DFSState) (childId : NodeId) (parentId : N
     xorParCount   := s.xorParCount.insert   childId xpc
     mulDepth      := s.mulDepth.insert      childId d
     parents       := s.parents.insert       childId pars }
-  -- Recurse only if this is the first visit.
   if s.visited.contains childId then s
   else
     let s := { s with visited := s.visited.insert childId () }
     match dag.kind? childId with
     | some (NodeKind.xorNode ch) =>
-      ch.foldl (fun acc cid => dfsChild dag acc cid childId d true) s
+      ch.foldl (fun acc cid => dfsChild dag acc cid childId d       true)  s
     | some (NodeKind.andNode ch) =>
       ch.foldl (fun acc cid => dfsChild dag acc cid childId (d + 1) false) s
-    | _ => s -- leaf or const: no children
+    | _ => s
 
-/-- Starts a DFS from a probe root. -/
 partial def dfsRoot (dag : DAG) (s : DFSState) (rootId : NodeId) : DFSState :=
   if s.visited.contains rootId then s
   else
@@ -108,42 +232,23 @@ partial def dfsRoot (dag : DAG) (s : DFSState) (rootId : NodeId) : DFSState :=
       mulDepth := s.mulDepth.insert rootId 0 }
     match dag.kind? rootId with
     | some (NodeKind.xorNode ch) =>
-      ch.foldl (fun acc cid => dfsChild dag acc cid rootId 0 true) s
+      ch.foldl (fun acc cid => dfsChild dag acc cid rootId 0 true)  s
     | some (NodeKind.andNode ch) =>
       ch.foldl (fun acc cid => dfsChild dag acc cid rootId 1 false) s
     | _ => s
 
--- ============================================================
--- Probe State
--- ============================================================
-
-/-- Per-probe analysis state.
-    ```
-    n ∈ todo ↔ n ∈ dag.randoms
-             ∧ totalParCount[n] = 1
-             ∧ xorParCount[n] = 1
-    ```
-
-    Only `roots`, the two count maps, and `todo` are allocated per probe.
-    The underlying `DAG` is shared with the `GlobalDAG` and is not deep-copied. -/
 structure ProbeState where
   roots            : Array NodeId
-  /-- Number of XOR-node parents per reachable node. -/
   xorParCount      : HashMap NodeId Nat
-  /-- Total parent count per reachable node. -/
   totalParCount    : HashMap NodeId Nat
-  /-- Minimum multiplicative depth of a node. -/
   mulDepth         : HashMap NodeId Nat
-  /-- Parents of a node. -/
   parents          : HashMap NodeId (Array NodeId)
-  /-- Rewritable random leaves. -/
   todo             : Array NodeId
-  /-- XOR nodes that have been rewritten as fresh randoms. -/
   rewrittenRandoms : HashMap NodeId Unit
+  deriving Inhabited
 
 namespace ProbeState
 
-/-- Checks if `NodeId` is rewritable. -/
 @[inline]
 def isStandalone (ps : ProbeState) (id : NodeId) : Bool :=
   ps.totalParCount[id]? == some 1 && ps.xorParCount[id]? == some 1
@@ -155,119 +260,44 @@ def isRandom (ps : ProbeState) (dag : DAG) (id : NodeId) : Bool :=
   | some (NodeKind.leaf (VarType.Random _)) => true
   | _                                       => false
 
-/-- Pretty-printing for debugging. -/
-def pp (ps : ProbeState) (dag : DAG) : String :=
-  let ppIds ids := String.intercalate ", " (ids.toList.map dag.ppNode)
-  s!"  Roots              : [{ppIds ps.roots}]\n" ++
-  s!"  Rewritable randoms : [{ppIds ps.todo}]"
-
 end ProbeState
 
--- ============================================================
--- Probe initialization
--- ============================================================
-
-/-- Inserts `r` into `ps.todo` at the position that maintains ascending
-    `mulDepth` order. -/
 def insertTodoByDepth (ps : ProbeState) (r : NodeId) : ProbeState :=
   let d := (ps.mulDepth[r]?).getD 0
-  -- Find the first existing entry whose depth exceeds d.
-  let pos := (ps.todo.findIdx? (fun rid => (ps.mulDepth[rid]?).getD 0 > d)).getD
-    ps.todo.size -- no random exceeds d
+  let pos := (ps.todo.findIdx? (fun rid => (ps.mulDepth[rid]?).getD 0 > d)).getD ps.todo.size
   { ps with todo := ps.todo.insertIdx! pos r }
 
-/-- Initializes a probe context for the given wire names.
+/-- Probe initialisation by pre-factored root NodeIds.
 
-    ## The pipeline is as follows
-
-    **Step 1) Resolve**: map each wire name to its root `NodeId` via
-    `gdag.wires`. (returns an error for any unknown wire name)
-
-    **Step 2) Factor**: run `DAG.factor` on each probe root. This may
-    intern new factored nodes into `gdag.dag`. Factoring precedes the DFS
-    because it restructures expressions, potentially revealing standalone
-    randoms that were previously hidden inside AND products.
-
-    **Step 3) DFS**: one pass over the reachable subgraph to compute
-    `xorParCount` and `totalParCount`.
-
-    **Step 4) Filter**: scan `dag.randoms` and filter those with
-    `totalParCount = xorParCount = 1`.
-
-    Note: Factoring may extend the DAG with new factored nodes. The subsequent
-    probes must use the returned `GlobalDAG` so that those new nodes are visible
-    and can be hash-cons'ed again. -/
-def initProbe (gdag : GlobalDAG) (wireNames : Array String)
-  : Except String (GlobalDAG × ProbeState) := do
-  -- Step 1: resolve wire names → NodeIds.
-  let origRoots ← wireNames.mapM fun name =>
-    match gdag.wireId? name with
-    | some id => Except.ok id
-    | none    => Except.error s!"Unknown wire: '{name}'"
-  -- Step 2: factor each root, passing the dag along.
-  let (dag, factoredRoots) := gdag.dag.factor origRoots
-  let gdag := { gdag with dag := dag }
-  -- Step 3: DFS from all factored roots.
-  let s : DFSState := factoredRoots.foldl (dfsRoot gdag.dag) {}
-  -- Step 4: collect standalone randoms from the global randoms array.
-  let todoUnsorted := gdag.dag.randoms.filter fun rId => -- Q: we filter all the randoms
-                            -- but we can just filter the randoms encountered during DFS
-    s.totalParCount[rId]? == some 1 && s.xorParCount[rId]?   == some 1
-  let todo := todoUnsorted.qsort (fun a b =>
-    (s.mulDepth[a]?).getD 0 < (s.mulDepth[b]?).getD 0)
-  return (gdag, {
+    Calls `factor` defensively even after `factorAllWires` has been run.
+    The cost is bounded: factoring is idempotent on already-factored subgraphs
+    (every `mkXor`/`mkAnd` hits an existing intern entry); however, the factor
+    chosen for a XOR node can in principle change when the set of *probe
+    roots* presented restricts the view of common factors. -/
+def initProbeByIds (g : GlobalDAG) (rootIds : Array NodeId) : GlobalDAG × ProbeState :=
+  let (dag, factoredRoots) := g.dag.factor rootIds
+  let g := { g with dag := dag }
+  let s : DFSState := factoredRoots.foldl (dfsRoot g.dag) {}
+  let todoUnsorted := g.dag.randoms.filter (fun rId =>
+    s.totalParCount[rId]? == some 1 && s.xorParCount[rId]? == some 1)
+  let todo := todoUnsorted.qsort (fun a b => (s.mulDepth[a]?).getD 0 < (s.mulDepth[b]?).getD 0)
+  (g, {
     roots            := factoredRoots
     xorParCount      := s.xorParCount
     totalParCount    := s.totalParCount
     mulDepth         := s.mulDepth
     parents          := s.parents
     todo             := todo
-    rewrittenRandoms := {}
-  })
+    rewrittenRandoms := {} })
 
-/-- Same as above but probes by `NodeId` directly. -/
-def initProbeByIds (gdag : GlobalDAG) (rootIds : Array NodeId)
-  : GlobalDAG × ProbeState :=
-  let (dag, factoredRoots) := gdag.dag.factor rootIds
-  let gdag := { gdag with dag := dag }
-  let s : DFSState := factoredRoots.foldl (dfsRoot gdag.dag) {}
-  let todoUnsorted := gdag.dag.randoms.filter fun rId =>
-    s.totalParCount[rId]? == some 1 &&
-    s.xorParCount[rId]?   == some 1
-  let todo := todoUnsorted.qsort (fun a b =>
-    (s.mulDepth[a]?).getD 0 < (s.mulDepth[b]?).getD 0)
-  (gdag, {
-    roots            := factoredRoots
-    xorParCount      := s.xorParCount
-    totalParCount    := s.totalParCount
-    mulDepth         := s.mulDepth
-    parents          := s.parents
-    todo             := todo
-    rewrittenRandoms := {}
-  })
+def isSecure (g : GlobalDAG) (ps : ProbeState) : Bool :=
+  ps.roots.all (fun rid => !(g.dag.isSecretNode rid)) &&
+  g.dag.secrets.all (fun sid => (ps.totalParCount[sid]?).getD 0 == 0)
 
--- ============================================================
--- Check
--- ============================================================
-
-/-- Considers the probe secure iff:
-    (i) no probe root is itself a secret leaf, and
-    (ii) no secret leaf has a non-zero parent count (reachability). -/
-def isSecure (gdag : GlobalDAG) (ps : ProbeState) : Bool :=
-  ps.roots.all (fun rid => !(gdag.dag.isSecretNode rid)) &&
-  gdag.dag.secrets.all (fun sid => (ps.totalParCount[sid]?).getD 0 == 0)
-
--- ============================================================
--- Parent count update
--- ============================================================
-
-/-- Decrements the parent count of `nodeId` by one (the parent `wasXor`
-    indicates whether the lost edge was through an XOR gate).
-    If the count reaches zero, cascades to the node's children. -/
 partial def decrementParent (dag : DAG) (ps : ProbeState) (nodeId : NodeId) (wasXor : Bool)
-  : ProbeState :=
+    : ProbeState :=
   let tpc := (ps.totalParCount[nodeId]?).getD 0
-  if tpc == 0 then ps  -- already unreachable, so nothing to do. Q: is this code reachable?
+  if tpc == 0 then ps
   else
     let xpc  := (ps.xorParCount[nodeId]?).getD 0
     let tpc' := tpc - 1
@@ -278,255 +308,68 @@ partial def decrementParent (dag : DAG) (ps : ProbeState) (nodeId : NodeId) (was
       xorParCount   := if tpc' == 0 then ps.xorParCount.erase nodeId
                        else ps.xorParCount.insert nodeId xpc' }
     if tpc' == 0 then
-      -- Remove from todo if present
-      let ps := { ps with todo := ps.todo.filter (· != nodeId) } -- Q: (!)
+      let ps := { ps with todo := ps.todo.filter (· != nodeId) }
       if ps.rewrittenRandoms.contains nodeId then ps
-      else -- Cascade through DAG children unless this node was already rewritten
+      else
         match dag.kind? nodeId with
         | some (NodeKind.xorNode ch) =>
           ch.foldl (fun acc cid =>
-            let ps' := { acc with parents :=
-                         acc.parents.insert cid (((acc.parents[cid]?).getD #[]).filter (· != nodeId)) }
-            decrementParent dag ps' cid true) ps
+            let acc := { acc with
+            parents := acc.parents.insert cid (((acc.parents[cid]?).getD #[]).filter (· != nodeId)) }
+            decrementParent dag acc cid true) ps
         | some (NodeKind.andNode ch) =>
           ch.foldl (fun acc cid =>
-            let ps' := { acc with parents :=
-                         acc.parents.insert cid (((acc.parents[cid]?).getD #[]).filter (· != nodeId)) }
-            decrementParent dag ps' cid false) ps
-        | _ => ps  -- leaf, so nothing to cascade
+            let acc := { acc with
+            parents := acc.parents.insert cid (((acc.parents[cid]?).getD #[]).filter (· != nodeId)) }
+            decrementParent dag acc cid false) ps
+        | _ => ps
     else
-      -- The node still reachable.  Check if it just became a standalone random.
-      if ps.isRandom dag nodeId && tpc' == 1 && xpc' == 1 then
-        insertTodoByDepth ps nodeId
+      if ps.isRandom dag nodeId && tpc' == 1 && xpc' == 1 then insertTodoByDepth ps nodeId
       else ps
 
--- ============================================================
--- The rewrite
--- ============================================================
-
-/-!
-## One rewrite step
-
-Given standalone random `r` with unique XOR parent `x`:
-
-1. Add `x` to `rewrittenRandoms` (x now acts as a fresh random leaf).
-2. Remove `r` from all tracking structures (it has been absorbed into x).
-3. For each sibling `c_i ≠ r` of `r` inside `x`:
-   - Remove `x` from `parents[c_i]`.
-   - Decrement `c_i`'s count (with cascade if it hits zero).
-4. If `x` itself is now standalone (inherited x's original parents, and
-   those counts are (1,1)), enqueue `x` for a future rewrite.
--/
-
-def applyRewrite (gdag : GlobalDAG) (ps : ProbeState) (r : NodeId)
-  : GlobalDAG × ProbeState :=
-  let x := ((ps.parents[r]?).getD #[])[0]!   -- sole XOR parent of `r`
-  -- Get x's children from the DAG.
-  let xCh := match gdag.dag.kind? x with
+def applyRewrite (g : GlobalDAG) (ps : ProbeState) (r : NodeId) : GlobalDAG × ProbeState :=
+  let x := ((ps.parents[r]?).getD #[])[0]!
+  let xCh := match g.dag.kind? x with
     | some (NodeKind.xorNode ch) => ch
     | _                          => #[]
-  -- Step 1: mark `x` as a rewritten random.
   let ps := { ps with rewrittenRandoms := ps.rewrittenRandoms.insert x () }
-  -- Step 2: remove r from all tracking.
   let ps := { ps with
     totalParCount := ps.totalParCount.erase r
     xorParCount   := ps.xorParCount.erase   r
     mulDepth      := ps.mulDepth.erase      r
     parents       := ps.parents.erase       r }
-  -- Step 3: disconnect `x` from each sibling `c_i ≠ r` and cascade.
   let ps := xCh.foldl (fun ps ci =>
     if ci == r then ps
     else
-      -- Remove `x` from `c_i`'s parent list.
       let newPars := ((ps.parents[ci]?).getD #[]).filter (· != x)
       let ps := { ps with parents := ps.parents.insert ci newPars }
-      -- Decrement `c_i`'s count.
-      decrementParent gdag.dag ps ci true) ps
-  (gdag, ps)
+      decrementParent g.dag ps ci true)
+    ps
+  (g, ps)
 
--- ============================================================
--- Rewrite loop
--- ============================================================
-
-/-- Repeatedly applies rewrites until the probe is secure or no further rewrites
-    are possible.
-
-    The loop processes `todo` entries from the front (minimum multiplicative
-    depth first). `findIdx?` skips stale entries whose `isStandalone`
-    condition is no longer satisfied. -/
-partial def rewriteLoop (gdag : GlobalDAG) (ps : ProbeState)
-  : GlobalDAG × ProbeState × Bool :=
-  if isSecure gdag ps then (gdag, ps, true)
+partial def rewriteLoop (g : GlobalDAG) (ps : ProbeState) : GlobalDAG × ProbeState × Bool :=
+  if isSecure g ps then (g, ps, true)
   else
     match ps.todo[0]? with
-    | none   => (gdag, ps, false)   -- no more rewrites available
+    | none   => (g, ps, false)
     | some r =>
-      -- Remove the consumed entry before rewriting.
       let ps := { ps with todo := ps.todo.eraseIdx! 0 }
-      let (gdag', ps') := applyRewrite gdag ps r
-      rewriteLoop gdag' ps'
-
-/-- Full probe pipeline: init + rewrite loop.
-    Returns `(updatedGlobalDAG, finalProbeState, probeIsSecure)`. -/
-def checkProbe (gdag : GlobalDAG) (wireNames : Array String)
-    : Except String (GlobalDAG × ProbeState × Bool) := do
-  let (gdag', ps) ← initProbe gdag wireNames
-  return rewriteLoop gdag' ps
+      let (g', ps') := applyRewrite g ps r
+      rewriteLoop g' ps'
 
 -- ============================================================
 -- Examples
 -- ============================================================
 
-/-! ## Example 1 — r0 is rewritable when probing one wire but not two
+/-! ## DOM-AND circuit -/
+def sharedDomAND : GlobalDAG := ({} : GlobalDAG)
+  |>.addWireAnd "a0b0" #[WireInput.leaf (VarType.Secret "a0"), WireInput.leaf (VarType.Secret "b0")]
+  |>.addWireAnd "a0b1" #[WireInput.leaf (VarType.Secret "a0"), WireInput.leaf (VarType.Secret "b1")]
+  |>.addWireAnd "a1b0" #[WireInput.leaf (VarType.Secret "a1"), WireInput.leaf (VarType.Secret "b0")]
+  |>.addWireAnd "a1b1" #[WireInput.leaf (VarType.Secret "a1"), WireInput.leaf (VarType.Secret "b1")]
+  |>.addWireXor "s0"   #[WireInput.wire "a0b0", .wire "a0b1", WireInput.leaf (VarType.Random "r")]
+  |>.addWireXor "s1"   #[WireInput.wire "a1b0", .wire "a1b1", WireInput.leaf (VarType.Random "r")]
 
-    Circuit:
-      w1 = e * a + r0
-      w2 = e * b + r0
--/
-def circuit1 : GlobalDAG :=
-  let g : GlobalDAG := {}
-  let (g, e)  := g.mkLeaf (VarType.Public "e")
-  let (g, a)  := g.mkLeaf (VarType.Secret "a")
-  let (g, b)  := g.mkLeaf (VarType.Secret "b")
-  let (g, r0) := g.mkLeaf (VarType.Random "r0")
-  let (g, ea) := g.mkAnd  #[e, a]
-  let (g, eb) := g.mkAnd  #[e, b]
-  let (g, w1) := g.mkXor  #[ea, r0]
-  let (g, w2) := g.mkXor  #[eb, r0]
-  (g.addWire "w1" w1).addWire "w2" w2
-
-def example1 : IO Unit := do
-  let g := circuit1
-  for probe in [#["w1"], #["w2"], #["w1", "w2"]] do
-    let label := "{" ++ String.intercalate ", " probe.toList ++ "}"
-    match initProbe g probe with
-    | Except.error e     => IO.println s!"Probe {label}: error — {e}"
-    | Except.ok (g', ps) => IO.println s!"Probe {label}:\n{ps.pp g'.dag}"
-
-#eval example1
-
-/-! ## Example 2 — factoring
-
-    Circuit:
-      w = e * a + e * b + r0
--/
-def circuit2 : GlobalDAG :=
-  let g : GlobalDAG := {}
-  let (g, e)  := g.mkLeaf (VarType.Public "e")
-  let (g, a)  := g.mkLeaf (VarType.Secret "a")
-  let (g, b)  := g.mkLeaf (VarType.Secret "b")
-  let (g, r0) := g.mkLeaf (VarType.Random "r0")
-  let (g, ea) := g.mkAnd #[e, a]
-  let (g, eb) := g.mkAnd #[e, b]
-  let (g, w)  := g.mkXor #[ea, eb, r0]
-  g.addWire "w" w
-
-def example2 : IO Unit := do
-  let g := circuit2
-  let origRoot := (g.wireId? "w").get!
-  IO.println s!"Original: {g.ppNode origRoot}"
-  match initProbe g #["w"] with
-  | Except.error e     => IO.println s!"Error: {e}"
-  | Except.ok (g', ps) => IO.println s!"Probe:\n{ps.pp g'.dag}"
-
-#eval example2
-
-/-! ## Example 3 — 2 share DOM-AND gate
-
-    s0 = a0*b0 + a0*b1 + r,  s1 = a1*b0 + a1*b1 + r
--/
-def domAND : GlobalDAG :=
-  let g : GlobalDAG := {}
-  let (g, a0) := g.mkLeaf (VarType.Secret "a0")
-  let (g, a1) := g.mkLeaf (VarType.Secret "a1")
-  let (g, b0) := g.mkLeaf (VarType.Secret "b0")
-  let (g, b1) := g.mkLeaf (VarType.Secret "b1")
-  let (g, r)  := g.mkLeaf (VarType.Random "r")
-  let (g, a0b0) := g.mkAnd #[a0, b0]
-  let (g, a0b1) := g.mkAnd #[a0, b1]
-  let (g, a1b0) := g.mkAnd #[a1, b0]
-  let (g, a1b1) := g.mkAnd #[a1, b1]
-  let (g, s0)   := g.mkXor #[a0b0, a0b1, r]
-  let (g, s1)   := g.mkXor #[a1b0, a1b1, r]
-  (g.addWire "w0" s0).addWire "w1" s1
-
-def example3 : IO Unit := do
-  let g := domAND
-  for probe in [#["w0"], #["w1"], #["w0", "w1"]] do
-    let label := "{" ++ String.intercalate ", " probe.toList ++ "}"
-    match initProbe g probe with
-    | Except.error e     => IO.println s!"Probe {label}: error — {e}"
-    | Except.ok (g', ps) => IO.println s!"Probe {label}:\n{ps.pp g'.dag}"
-
-def example3_rewrite : IO Unit := do
-  let g := domAND
-  for probe in [#["w0"], #["w1"], #["w0", "w1"]] do
-    let label := "{" ++ String.intercalate ", " probe.toList ++ "}"
-    match checkProbe g probe with
-    | Except.error e          => IO.println s!"Probe {label}: error — {e}"
-    | Except.ok (g', ps, sec) =>
-        IO.println s!"Probe {label}: secure = {sec}\n{ps.pp g'.dag}"
-
-#eval example3
-#eval example3_rewrite
-
-/-! ## Example 4 — flattening does not harm probing
-
-    Circuit:
-      w1 = a + r0
-      w3 = w1 + r0
-      w4 = w3 + r1
--/
-def circuit4 : GlobalDAG :=
-  let g : GlobalDAG := {}
-  let (g, a)  := g.mkLeaf (VarType.Secret "a")
-  let (g, r0) := g.mkLeaf (VarType.Random "r0")
-  let (g, r1) := g.mkLeaf (VarType.Random "r1")
-  let (g, w1) := g.mkXor #[a, r0]
-  let (g, w3) := g.mkXor #[w1, r0]
-  let (g, w4) := g.mkXor #[w3, r1]
-  ((g.addWire "w1" w1).addWire "w3" w3).addWire "w4" w4
-
-def example4 : IO Unit := do
-  let g := circuit4
-  for probe in [#["w1"], #["w3"], #["w4"], #["w3", "w4"]] do
-    let label := "{" ++ String.intercalate ", " probe.toList ++ "}"
-    match initProbe g probe with
-    | Except.error e     => IO.println s!"Probe {label}: error — {e}"
-    | Except.ok (g', ps) => IO.println s!"Probe {label}:\n{ps.pp g'.dag}"
-
-#eval example4
-
-/-! ## Example 5 — Q_12^4
-
-    s0 = (a + r0)*(b + r1) + (a + r0)*(c + r2) + (c + r2) + (a + r0)*(r1) + (a + r0)*(r2)
--/
-def circuit5 : GlobalDAG :=
-  let g : GlobalDAG := {}
-  let (g, a) := g.mkLeaf (VarType.Secret "a")
-  let (g, b) := g.mkLeaf (VarType.Secret "b")
-  let (g, c) := g.mkLeaf (VarType.Secret "c")
-  let (g, r0) := g.mkLeaf (VarType.Random "r0")
-  let (g, r1) := g.mkLeaf (VarType.Random "r1")
-  let (g, r2) := g.mkLeaf (VarType.Random "r2")
-  let (g, ar0) := g.mkXor #[a, r0]
-  let (g, br1) := g.mkXor #[b, r1]
-  let (g, cr2) := g.mkXor #[c, r2]
-  let (g, t1) := g.mkAnd #[ar0, br1]
-  let (g, t2) := g.mkAnd #[ar0, cr2]
-  let (g, t3) := g.mkAnd #[ar0, r1]
-  let (g, t4) := g.mkAnd #[ar0, r2]
-  let (g, root) := g.mkXor #[t1, t2, cr2, t3, t4]
-  g.addWire "w0" root
-
-def example5 : IO Unit := do
-  let g := circuit5
-  let origRoot := (g.wireId? "w0").get!
-  IO.println s!"Original: {g.ppNode origRoot}"
-  match checkProbe g #["w0"] with
-  | Except.error e     => IO.println s!"Error: {e}"
-  | Except.ok (g', ps, sec) => IO.println s!"Probe: secure = {sec}\n{ps.pp g'.dag}"
-
-#eval example5
+#eval IO.println (Circuit.ppCircuit sharedDomAND.circuit)
 
 end verif
