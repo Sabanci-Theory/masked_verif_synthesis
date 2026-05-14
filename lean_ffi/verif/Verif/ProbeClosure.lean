@@ -262,8 +262,7 @@ partial def checkAllSingle
     let (g, _, allSec) := checkProbeByNames g fw wires
     if allSec then (g, CheckResult.Secure)
     else
-      let (chosen, closure) :=
-        buildProbeSetSingle g.circuit fw wireIndex count wires
+      let (chosen, closure) := buildProbeSetSingle g.circuit fw wireIndex count wires
       let (g, _, chosenSec) := checkProbeByNames g fw chosen
       if !chosenSec then (g, CheckResult.Insecure chosen)
       else
@@ -272,11 +271,12 @@ partial def checkAllSingle
         let (g, r1) := checkAllSingle g fw wireIndex count unsafeWires
         if !r1.isSecure then (g, r1)
         else
+          let safeWithinWires := wires.filter (fun w => closureSet.contains w)
           let rec doMixed (g : GlobalDAG) (i : Nat) : GlobalDAG × CheckResult :=
             if i == 0 then (g, CheckResult.Secure)
             else
-              let (g, ri) := checkAllMulti g fw wireIndex
-                #[{ count := i, wires := closure }, { count := count - i, wires := unsafeWires }]
+              let (g, ri) := checkAllMulti g fw wireIndex #[{ count := i, wires := safeWithinWires },
+                                                            { count := count - i, wires := unsafeWires }]
               if !ri.isSecure then (g, ri)
               else doMixed g (i - 1)
           doMixed g (count - 1)
@@ -319,8 +319,8 @@ partial def checkAllMulti
                   if i == 0 then splitFactor g (jIdx + 1)
                   else
                     let newWl : ProbeWorklist := (wl.extract 0 jIdx)
-                        ++ #[{ count := i, wires := safeJ }, { count := f.count - i, wires := unsafeJ }]
-                        ++ (wl.extract (jIdx + 1) wl.size)
+                      ++ #[{ count := i, wires := safeJ }, { count := f.count - i, wires := unsafeJ }]
+                      ++ (wl.extract (jIdx + 1) wl.size)
                     let (g, ri) := checkAllMulti g fw wireIndex newWl
                     if !ri.isSecure then (g, ri)
                     else doI g (i - 1)
