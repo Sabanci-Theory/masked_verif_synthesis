@@ -278,8 +278,9 @@ def initProbeByIds (g : GlobalDAG) (rootIds : Array NodeId) : GlobalDAG × Probe
   let (dag, factoredRoots) := g.dag.factor rootIds
   let g := { g with dag := dag }
   let s : DFSState := factoredRoots.foldl (dfsRoot g.dag) {}
+  let rootSet : HashMap NodeId Unit := factoredRoots.foldl (fun m r => m.insert r ()) {}
   let todoUnsorted := g.dag.randoms.filter (fun rId =>
-    s.totalParCount[rId]? == some 1 && s.xorParCount[rId]? == some 1)
+    s.totalParCount[rId]? == some 1 && s.xorParCount[rId]? == some 1 && !rootSet.contains rId)
   let todo := todoUnsorted.qsort (fun a b => (s.mulDepth[a]?).getD 0 < (s.mulDepth[b]?).getD 0)
   (g, {
     roots            := factoredRoots
