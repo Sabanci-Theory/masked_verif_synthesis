@@ -20,22 +20,22 @@ def buildWireIndex (fw : HashMap String NodeId) : HashMap NodeId (Array String) 
     acc.insert nid (cur.push name))
     {}
 
-private def isComputable (inp : WireInput) (known : HashMap String Unit) : Bool :=
+def isComputable (inp : WireInput) (known : HashMap String Unit) : Bool :=
   match inp with
-  | .const _          => true
-  | .leaf (.Public _) => true
-  | .leaf (.Secret _) => false
-  | .leaf (.Random _) => false
-  | .wire name        => known.contains name
+  | WireInput.const _          => true
+  | WireInput.leaf (.Public _) => true
+  | WireInput.leaf (.Secret _) => false
+  | WireInput.leaf (.Random _) => false
+  | WireInput.wire name        => known.contains name
 
-private def isWireRef (inp : WireInput) : Option String :=
+def isWireRef (inp : WireInput) : Option String :=
   match inp with
-  | .wire name => some name
+  | WireInput.wire name => some name
   | _          => none
 
 /-- Symmetric difference as a GF(2) multiset: an element survives iff its
     total count is odd. -/
-private def symmDiff (a b : Array WireInput) : Array WireInput := Id.run do
+def symmDiff (a b : Array WireInput) : Array WireInput := Id.run do
   let mut counts : HashMap WireInput Nat := {}
   for x in a do
     counts := counts.insert x ((counts[x]?.getD 0) + 1)
@@ -52,7 +52,7 @@ private def symmDiff (a b : Array WireInput) : Array WireInput := Id.run do
 
 /-- Try the forward/backward rules on wire `name`.  Returns the wire(s) to
     newly add to known, if any. -/
-private def tryForwardBackward
+def tryForwardBackward
     (circ : Circuit) (known : HashMap String Unit) (name : String)
     : Option String :=
   match circ.wireDefs[name]? with
@@ -69,7 +69,7 @@ private def tryForwardBackward
     else none
 
 /-- Try the symm-diff rule with `wp` as source and `wq` as candidate. -/
-private def trySymmDiff
+def trySymmDiff
     (circ : Circuit) (known : HashMap String Unit) (wp wq : String) : Bool :=
   if known.contains wq then false
   else match circ.wireDefs[wp]?, circ.wireDefs[wq]? with
@@ -102,7 +102,7 @@ def applyEquivalence
 /-- Drain a worklist of newly-known wires, applying forward/backward and
     symm-diff (with the newly-known wire as source) until the worklist is
     empty.  Updates `known` in place. -/
-private partial def drainWorklist
+partial def drainWorklist
     (circ      : Circuit)
     (revDeps   : HashMap String (Array String))
     (known     : HashMap String Unit)
@@ -141,7 +141,7 @@ private partial def drainWorklist
     This catches the case where a wire `w` newly became known and is now in
     the differing part of some other pair's symm-diff that wasn't directly
     indexed.  Run at most once per closure call after the worklist drains. -/
-private def coarsePass
+def coarsePass
     (circ : Circuit) (known : HashMap String Unit)
     : HashMap String Unit × Array String × Bool :=
   -- Forward/backward over all wires.
@@ -172,6 +172,7 @@ private def coarsePass
 /-- Compute the closure of `Y` under equivalence, forward/backward, and
     symm-diff containment.  Uses an incremental worklist driven by the
     reverse-dependency index. -/
+/-
 partial def closureWires
     (circ      : Circuit)
     (revDeps   : HashMap String (Array String))
@@ -196,9 +197,9 @@ partial def closureWires
     if changedCoarse then iter known addedCoarse else known
   let final := iter initial Y
   final.fold (fun acc w _ => acc.push w) #[]
+-/
 
-/-
-partial def closureWires
+def closureWires
     (circ      : Circuit)
     (revDeps   : HashMap String (Array String))
     (fw        : HashMap String NodeId)
@@ -206,7 +207,6 @@ partial def closureWires
     (Y         : Array String)
     : Array String :=
   Y
--/
 
 -- ============================================================
 -- Worklist and check result (unchanged)
@@ -338,8 +338,8 @@ partial def checkAllSingle
     (count     : Nat)
     (wires     : Array String)
     : GlobalDAG × CheckResult :=
-  if count == 0 then (g, .Secure)
-  else if wires.size < count then (g, .Secure)
+  if count == 0 then (g, CheckResult.Secure)
+  else if wires.size < count then (g, CheckResult.Secure)
   else
     let (g, _, allSec) := checkProbeByNames g fw wires
     if allSec then (g, CheckResult.Secure)
@@ -357,7 +357,7 @@ partial def checkAllSingle
         else
           let safeWithinWires := wires.filter (fun w => closureSet.contains w)
           let rec doMixed (g : GlobalDAG) (i : Nat) : GlobalDAG × CheckResult :=
-            if i == 0 then (g, .Secure)
+            if i == 0 then (g, CheckResult.Secure)
             else
               let (g, ri) := checkAllMulti g revDeps fw wireIndex
                 #[{ count := i,         wires := safeWithinWires },
@@ -373,7 +373,7 @@ partial def checkAllMulti
     (wireIndex : HashMap NodeId (Array String))
     (wl        : ProbeWorklist)
     : GlobalDAG × CheckResult :=
-  if isWorklistVacuous wl then (g, .Secure)
+  if isWorklistVacuous wl then (g, CheckResult.Secure)
   else
     let wl := cleanWorklist wl
     if wl.isEmpty then (g, CheckResult.Secure)
@@ -399,7 +399,7 @@ partial def checkAllMulti
           else
             let rec splitFactor (g : GlobalDAG) (jIdx : Nat)
                 : GlobalDAG × CheckResult :=
-              if jIdx >= wl.size then (g, .Secure)
+              if jIdx >= wl.size then (g, CheckResult.Secure)
               else
                 let f := wl[jIdx]!
                 let safeJ   := f.wires.filter (fun w => closureSet.contains w)
@@ -421,7 +421,7 @@ partial def checkAllMulti
 end
 
 -- ============================================================
--- Public entry point — builds revDeps once
+-- Public entry point
 -- ============================================================
 
 def checkDProbing (g : GlobalDAG) (probingOrder : Nat)
@@ -585,53 +585,232 @@ def circuitF : GlobalDAG := ({} : GlobalDAG)
 
 #eval do
   let (g, _, res1) := checkDProbing circuitF 1
-  IO.println "=== F: shared Q⁴₁₂ (no extra r) ==="
+  IO.println "=== shared Q⁴₁₂ ==="
   IO.println (Circuit.ppCircuit g.circuit)
   IO.println (ppResult res1 1)
   let (_, _, res2) := checkDProbing circuitF 2
   IO.println (ppResult res2 2)
 
-/-! ### Example 7 — DOM-AND with 3 shares -/
+/-! ## Example 7 — DOM-AND with 3 shares -/
 def circuitG : GlobalDAG := ({} : GlobalDAG)
   -- share production for a
-  |>.addWireXor "a0" #[.leaf (.Random "ra0")]
-  |>.addWireXor "a1" #[.leaf (.Random "ra1")]
-  |>.addWireXor "a2" #[.leaf (.Secret "a"), .leaf (.Random "ra0"), .leaf (.Random "ra1")]
+  |>.addWireXor "a0" #[WireInput.leaf (VarType.Random "ra0")]
+  |>.addWireXor "a1" #[WireInput.leaf (VarType.Random "ra1")]
+  |>.addWireXor "a2" #[WireInput.leaf (VarType.Secret "a"),
+                       WireInput.leaf (VarType.Random "ra0"),
+                       WireInput.leaf (VarType.Random "ra1")]
   -- share production for b
-  |>.addWireXor "b0" #[.leaf (.Random "rb0")]
-  |>.addWireXor "b1" #[.leaf (.Random "rb1")]
-  |>.addWireXor "b2" #[.leaf (.Secret "b"), .leaf (.Random "rb0"), .leaf (.Random "rb1")]
+  |>.addWireXor "b0" #[WireInput.leaf (VarType.Random "rb0")]
+  |>.addWireXor "b1" #[WireInput.leaf (VarType.Random "rb1")]
+  |>.addWireXor "b2" #[WireInput.leaf (VarType.Secret "b"),
+                       WireInput.leaf (VarType.Random "rb0"),
+                       WireInput.leaf (VarType.Random "rb1")]
   -- diagonal products
-  |>.addWireAnd "u0" #[.wire "a0", .wire "b0"]
-  |>.addWireAnd "u1" #[.wire "a1", .wire "b1"]
-  |>.addWireAnd "u2" #[.wire "a2", .wire "b2"]
+  |>.addWireAnd "u0" #[WireInput.wire "a0", WireInput.wire "b0"]
+  |>.addWireAnd "u1" #[WireInput.wire "a1", WireInput.wire "b1"]
+  |>.addWireAnd "u2" #[WireInput.wire "a2", WireInput.wire "b2"]
   -- cross products
-  |>.addWireAnd "p01" #[.wire "a0", .wire "b1"]
-  |>.addWireAnd "p10" #[.wire "a1", .wire "b0"]
-  |>.addWireAnd "p02" #[.wire "a0", .wire "b2"]
-  |>.addWireAnd "p20" #[.wire "a2", .wire "b0"]
-  |>.addWireAnd "p12" #[.wire "a1", .wire "b2"]
-  |>.addWireAnd "p21" #[.wire "a2", .wire "b1"]
+  |>.addWireAnd "p01" #[WireInput.wire "a0", WireInput.wire "b1"]
+  |>.addWireAnd "p10" #[WireInput.wire "a1", WireInput.wire "b0"]
+  |>.addWireAnd "p02" #[WireInput.wire "a0", WireInput.wire "b2"]
+  |>.addWireAnd "p20" #[WireInput.wire "a2", WireInput.wire "b0"]
+  |>.addWireAnd "p12" #[WireInput.wire "a1", WireInput.wire "b2"]
+  |>.addWireAnd "p21" #[WireInput.wire "a2", WireInput.wire "b1"]
   -- masked cross terms
-  |>.addWireXor "c01" #[.wire "p01", .leaf (.Random "r01")]
-  |>.addWireXor "c10" #[.wire "p10", .leaf (.Random "r01")]
-  |>.addWireXor "c02" #[.wire "p02", .leaf (.Random "r02")]
-  |>.addWireXor "c20" #[.wire "p20", .leaf (.Random "r02")]
-  |>.addWireXor "c12" #[.wire "p12", .leaf (.Random "r12")]
-  |>.addWireXor "c21" #[.wire "p21", .leaf (.Random "r12")]
+  |>.addWireXor "c01" #[WireInput.wire "p01", WireInput.leaf (VarType.Random "r01")]
+  |>.addWireXor "c10" #[WireInput.wire "p10", WireInput.leaf (VarType.Random "r01")]
+  |>.addWireXor "c02" #[WireInput.wire "p02", WireInput.leaf (VarType.Random "r02")]
+  |>.addWireXor "c20" #[WireInput.wire "p20", WireInput.leaf (VarType.Random "r02")]
+  |>.addWireXor "c12" #[WireInput.wire "p12", WireInput.leaf (VarType.Random "r12")]
+  |>.addWireXor "c21" #[WireInput.wire "p21", WireInput.leaf (VarType.Random "r12")]
   -- outputs
-  |>.addWireXor "s0" #[.wire "u0", .wire "c01", .wire "c02"]
-  |>.addWireXor "s1" #[.wire "u1", .wire "c10", .wire "c12"]
-  |>.addWireXor "s2" #[.wire "u2", .wire "c20", .wire "c21"]
+  |>.addWireXor "s0" #[WireInput.wire "u0", WireInput.wire "c01", WireInput.wire "c02"]
+  |>.addWireXor "s1" #[WireInput.wire "u1", WireInput.wire "c10", WireInput.wire "c12"]
+  |>.addWireXor "s2" #[WireInput.wire "u2", WireInput.wire "c20", WireInput.wire "c21"]
 
 #eval do
   let (g, _, res1) := checkDProbing circuitG 1
   let (_, _, res2) := checkDProbing circuitG 2
   let (_, _, res3) := checkDProbing circuitG 3
-  IO.println "=== G: 3-share DOM-AND ==="
+  IO.println "=== 3-share DOM-AND ==="
   IO.println (Circuit.ppCircuit g.circuit)
   IO.println (ppResult res1 1)
   IO.println (ppResult res2 2)
   IO.println (ppResult res3 3)
 
+/-! ## Example 8 — DOM-AND with 4 shares -/
+def circuitH : GlobalDAG := ({} : GlobalDAG)
+  -- share production for a
+  |>.addWireXor "a0" #[WireInput.leaf (VarType.Random "r_a0")]
+  |>.addWireXor "a1" #[WireInput.leaf (VarType.Random "r_a1")]
+  |>.addWireXor "a2" #[WireInput.leaf (VarType.Random "r_a2")]
+  |>.addWireXor "a3" #[WireInput.leaf (VarType.Secret "a"),
+                       WireInput.leaf (VarType.Random "r_a0"),
+                       WireInput.leaf (VarType.Random "r_a1"),
+                       WireInput.leaf (VarType.Random "r_a2")]
+  -- share production for b
+  |>.addWireXor "b0" #[WireInput.leaf (VarType.Random "r_b0")]
+  |>.addWireXor "b1" #[WireInput.leaf (VarType.Random "r_b1")]
+  |>.addWireXor "b2" #[WireInput.leaf (VarType.Random "r_b2")]
+  |>.addWireXor "b3" #[WireInput.leaf (VarType.Secret "b"),
+                       WireInput.leaf (VarType.Random "r_b0"),
+                       WireInput.leaf (VarType.Random "r_b1"),
+                       WireInput.leaf (VarType.Random "r_b2")]
+  -- diagonal products u_i = a_i * b_i
+  |>.addWireAnd "u0" #[WireInput.wire "a0", WireInput.wire "b0"]
+  |>.addWireAnd "u1" #[WireInput.wire "a1", WireInput.wire "b1"]
+  |>.addWireAnd "u2" #[WireInput.wire "a2", WireInput.wire "b2"]
+  |>.addWireAnd "u3" #[WireInput.wire "a3", WireInput.wire "b3"]
+  -- Cross products p_ij = a_i * b_j for i ≠ j (12 of them)
+  |>.addWireAnd "p01" #[WireInput.wire "a0", WireInput.wire "b1"]
+  |>.addWireAnd "p10" #[WireInput.wire "a1", WireInput.wire "b0"]
+  |>.addWireAnd "p02" #[WireInput.wire "a0", WireInput.wire "b2"]
+  |>.addWireAnd "p20" #[WireInput.wire "a2", WireInput.wire "b0"]
+  |>.addWireAnd "p03" #[WireInput.wire "a0", WireInput.wire "b3"]
+  |>.addWireAnd "p30" #[WireInput.wire "a3", WireInput.wire "b0"]
+  |>.addWireAnd "p12" #[WireInput.wire "a1", WireInput.wire "b2"]
+  |>.addWireAnd "p21" #[WireInput.wire "a2", WireInput.wire "b1"]
+  |>.addWireAnd "p13" #[WireInput.wire "a1", WireInput.wire "b3"]
+  |>.addWireAnd "p31" #[WireInput.wire "a3", WireInput.wire "b1"]
+  |>.addWireAnd "p23" #[WireInput.wire "a2", WireInput.wire "b3"]
+  |>.addWireAnd "p32" #[WireInput.wire "a3", WireInput.wire "b2"]
+  -- masked cross terms
+  |>.addWireXor "c01" #[WireInput.wire "p01", WireInput.leaf (VarType.Random "r01")]
+  |>.addWireXor "c10" #[WireInput.wire "p10", WireInput.leaf (VarType.Random "r01")]
+  -- pair {0,2}: r02
+  |>.addWireXor "c02" #[WireInput.wire "p02", WireInput.leaf (VarType.Random "r02")]
+  |>.addWireXor "c20" #[WireInput.wire "p20", WireInput.leaf (VarType.Random "r02")]
+  -- pair {0,3}: r03
+  |>.addWireXor "c03" #[WireInput.wire "p03", WireInput.leaf (VarType.Random "r03")]
+  |>.addWireXor "c30" #[WireInput.wire "p30", WireInput.leaf (VarType.Random "r03")]
+  -- pair {1,2}: r12
+  |>.addWireXor "c12" #[WireInput.wire "p12", WireInput.leaf (VarType.Random "r12")]
+  |>.addWireXor "c21" #[WireInput.wire "p21", WireInput.leaf (VarType.Random "r12")]
+  -- pair {1,3}: r13
+  |>.addWireXor "c13" #[WireInput.wire "p13", WireInput.leaf (VarType.Random "r13")]
+  |>.addWireXor "c31" #[WireInput.wire "p31", WireInput.leaf (VarType.Random "r13")]
+  -- pair {2,3}: r23
+  |>.addWireXor "c23" #[WireInput.wire "p23", WireInput.leaf (VarType.Random "r23")]
+  |>.addWireXor "c32" #[WireInput.wire "p32", WireInput.leaf (VarType.Random "r23")]
+  -- output shares s_i = u_i + Σ_{j ≠ i} c_ij.
+  |>.addWireXor "s0" #[WireInput.wire "u0", WireInput.wire "c01",
+                       WireInput.wire "c02", WireInput.wire "c03"]
+  |>.addWireXor "s1" #[WireInput.wire "u1", WireInput.wire "c10",
+                       WireInput.wire "c12", WireInput.wire "c13"]
+  |>.addWireXor "s2" #[WireInput.wire "u2", WireInput.wire "c20",
+                       WireInput.wire "c21", WireInput.wire "c23"]
+  |>.addWireXor "s3" #[WireInput.wire "u3", WireInput.wire "c30",
+                       WireInput.wire "c31", WireInput.wire "c32"]
+
+#eval do
+  IO.println "=== 4-share DOM-AND ==="
+  let t0 := (← IO.monoMsNow)
+  let (_, _, res1) := checkDProbing circuitH 1
+  let t1 := (← IO.monoMsNow)
+  IO.println s!"{ppResult res1 1}  [{t1 - t0} ms]"
+  let (_, _, res2) := checkDProbing circuitH 2
+  let t2 := (← IO.monoMsNow)
+  IO.println s!"{ppResult res2 2}  [{t2 - t1} ms]"
+  let (_, _, res3) := checkDProbing circuitH 3
+  let t3 := (← IO.monoMsNow)
+  IO.println s!"{ppResult res3 3}  [{t3 - t2} ms]"
+  let (_, _, res4) := checkDProbing circuitH 4
+  let t4 := (← IO.monoMsNow)
+  IO.println s!"{ppResult res4 4}  [{t4 - t3} ms]"
+
+/-! ## Example 9 — 4-share masking of the quadratic function F(x,y,z) = x + (y * z)
+
+    This is a 4-share Threshold Implementation of a quadratic Boolean
+    function in three input variables.
+
+    Construction:
+      Inputs:  three secrets x, y, z, each in 4 shares.
+
+      Output shares:
+        F_1 = x_2 + ∑_{i,j ∈ {2,3,4}} y_i * z_j
+        F_2 = x_3 + y_1 * z_3 + y_1 * z_4 + y_3 * z_1
+                  + y_4 * z_1 + y_1 * z_1
+        F_3 = x_4 + y_1 * z_2 + y_2 * z_1
+        F_4 = x_1
+
+      Correctness: ∑_i F_i = x + y * z -/
+def circuitI : GlobalDAG := ({} : GlobalDAG)
+  -- share production for x
+  |>.addWireXor "x1" #[WireInput.leaf (VarType.Random "r_x0")]
+  |>.addWireXor "x2" #[WireInput.leaf (VarType.Random "r_x1")]
+  |>.addWireXor "x3" #[WireInput.leaf (VarType.Random "r_x2")]
+  |>.addWireXor "x4" #[WireInput.leaf (VarType.Secret "x"),
+                       WireInput.leaf (VarType.Random "r_x0"),
+                       WireInput.leaf (VarType.Random "r_x1"),
+                       WireInput.leaf (VarType.Random "r_x2")]
+  -- share production for y
+  |>.addWireXor "y1" #[WireInput.leaf (VarType.Random "r_y0")]
+  |>.addWireXor "y2" #[WireInput.leaf (VarType.Random "r_y1")]
+  |>.addWireXor "y3" #[WireInput.leaf (VarType.Random "r_y2")]
+  |>.addWireXor "y4" #[WireInput.leaf (VarType.Secret "y"),
+                       WireInput.leaf (VarType.Random "r_y0"),
+                       WireInput.leaf (VarType.Random "r_y1"),
+                       WireInput.leaf (VarType.Random "r_y2")]
+  -- share production for z
+  |>.addWireXor "z1" #[WireInput.leaf (VarType.Random "r_z0")]
+  |>.addWireXor "z2" #[WireInput.leaf (VarType.Random "r_z1")]
+  |>.addWireXor "z3" #[WireInput.leaf (VarType.Random "r_z2")]
+  |>.addWireXor "z4" #[WireInput.leaf (VarType.Secret "z"),
+                       WireInput.leaf (VarType.Random "r_z0"),
+                       WireInput.leaf (VarType.Random "r_z1"),
+                       WireInput.leaf (VarType.Random "r_z2")]
+  -- all 16 cross-products y_i * z_j
+  |>.addWireAnd "y2z2" #[WireInput.wire "y2", WireInput.wire "z2"]
+  |>.addWireAnd "y2z3" #[WireInput.wire "y2", WireInput.wire "z3"]
+  |>.addWireAnd "y2z4" #[WireInput.wire "y2", WireInput.wire "z4"]
+  |>.addWireAnd "y3z2" #[WireInput.wire "y3", WireInput.wire "z2"]
+  |>.addWireAnd "y3z3" #[WireInput.wire "y3", WireInput.wire "z3"]
+  |>.addWireAnd "y3z4" #[WireInput.wire "y3", WireInput.wire "z4"]
+  |>.addWireAnd "y4z2" #[WireInput.wire "y4", WireInput.wire "z2"]
+  |>.addWireAnd "y4z3" #[WireInput.wire "y4", WireInput.wire "z3"]
+  |>.addWireAnd "y4z4" #[WireInput.wire "y4", WireInput.wire "z4"]
+  |>.addWireAnd "y1z3" #[WireInput.wire "y1", WireInput.wire "z3"]
+  |>.addWireAnd "y1z4" #[WireInput.wire "y1", WireInput.wire "z4"]
+  |>.addWireAnd "y3z1" #[WireInput.wire "y3", WireInput.wire "z1"]
+  |>.addWireAnd "y4z1" #[WireInput.wire "y4", WireInput.wire "z1"]
+  |>.addWireAnd "y1z1" #[WireInput.wire "y1", WireInput.wire "z1"]
+  |>.addWireAnd "y1z2" #[WireInput.wire "y1", WireInput.wire "z2"]
+  |>.addWireAnd "y2z1" #[WireInput.wire "y2", WireInput.wire "z1"]
+  -- output shares
+  |>.addWireXor "F1" #[WireInput.wire "x2",
+                       WireInput.wire "y2z2", WireInput.wire "y2z3", WireInput.wire "y2z4",
+                       WireInput.wire "y3z2", WireInput.wire "y3z3", WireInput.wire "y3z4",
+                       WireInput.wire "y4z2", WireInput.wire "y4z3", WireInput.wire "y4z4"]
+  |>.addWireXor "F2" #[WireInput.wire "x3",
+                       WireInput.wire "y1z3", WireInput.wire "y1z4",
+                       WireInput.wire "y3z1", WireInput.wire "y4z1",
+                       WireInput.wire "y1z1"]
+  |>.addWireXor "F3" #[WireInput.wire "x4",
+                       WireInput.wire "y1z2", WireInput.wire "y2z1"]
+  |>.addWireXor "F4" #[WireInput.wire "x1"]
+
+#eval do
+  IO.println "=== 4-share masked version of x ⊕ yz ==="
+  let t0 := (← IO.monoMsNow)
+  let (_, _, res1) := checkDProbing circuitI 1
+  let t1 := (← IO.monoMsNow)
+  IO.println s!"{ppResult res1 1}  [{t1 - t0} ms]"
+  let (_, _, res2) := checkDProbing circuitI 2
+  let t2 := (← IO.monoMsNow)
+  IO.println s!"{ppResult res2 2}  [{t2 - t1} ms]"
+  let (_, _, res3) := checkDProbing circuitI 3
+  let t3 := (← IO.monoMsNow)
+  IO.println s!"{ppResult res3 3}  [{t3 - t2} ms]"
+  let (_, _, res4) := checkDProbing circuitI 4
+  let t4 := (← IO.monoMsNow)
+  IO.println s!"{ppResult res4 4}  [{t4 - t3} ms]"
+
 end verif
+
+-- investigate why closures suck, they shouldn't
+-- check whether example 9 would be verified in maskverif
+-- check what Barthe does in order not to do redundant work       --> it doesn't do anything
+-- reimplement witness replay in place of closures then compare
+-- get maskverif working
+-- implement the (A, V, k) worklist representation and compare
+-- investigate redundant worklist items (due to closures)
