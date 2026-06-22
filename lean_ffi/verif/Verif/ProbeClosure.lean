@@ -710,3 +710,11 @@ def circuitH : GlobalDAG :=
 -/
 
 end verif
+
+-- investigate why closures suck, they shouldn't
+-- check whether example 9 would be verified in maskverif
+-- check what Barthe does in order not to do redundant work       --> it doesn't do anything
+-- reimplement witness replay in place of closures then compare
+-- get maskverif working
+-- implement the (A, V, k) worklist representation and compare
+-- investigate redundant worklist items (due to closures)
