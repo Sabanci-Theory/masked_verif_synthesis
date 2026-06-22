@@ -101,8 +101,9 @@ def isSecretNode (dag : DAG) (id : NodeId) : Bool :=
 def flattenXor (dag : DAG) (ids : Array NodeId) : Array NodeId :=
   ids.foldl (fun acc id =>
     match dag.kind? id with
-    | some (NodeKind.xorNode ch) => ch.foldl xorInsert acc
-    | _                          => xorInsert acc id)
+    | some (NodeKind.constVal false) => acc                  -- 0 is the XOR identity
+    | some (NodeKind.xorNode ch)     => ch.foldl xorInsert acc
+    | _                              => xorInsert acc id)    -- 1 kept; cancels in pairs
     #[]
 
 def flattenAnd (dag : DAG) (ids : Array NodeId) : Array NodeId × Bool :=

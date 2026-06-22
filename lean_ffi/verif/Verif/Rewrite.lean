@@ -41,10 +41,16 @@ def isXor : WireDef → Bool
 
 end WireDef
 
-/-- A wire-level netlist. -/
+/-- A wire-level netlist.
+
+    `wireOrder` lists the **probeable** gadget-body wires (the observable set).
+    `inputOrder` lists **input shares** — atomically-encoded gadget inputs that
+    are not probe targets but whose `WireDef` is kept so their algebraic value is
+    available to the closure and (via the DAG) to the rewrite engine. -/
 structure Circuit where
-  wireOrder : Array String           := #[]
-  wireDefs  : HashMap String WireDef := {}
+  wireOrder  : Array String           := #[]
+  inputOrder : Array String           := #[]
+  wireDefs   : HashMap String WireDef := {}
   deriving Inhabited
 
 namespace Circuit
@@ -59,19 +65,14 @@ def addWire (c : Circuit) (name : String) (d : WireDef) : Circuit :=
     wireOrder := c.wireOrder.push name
     wireDefs  := c.wireDefs.insert name d }
 
-/-- Reverse dependency index: for each wire `w`, the list of wires whose
-    `WireDef` references `w` as an input.  Useful for an incremental
-    closure worklist algorithm. -/
-def buildReverseDeps (c : Circuit) : HashMap String (Array String) :=
-  c.wireDefs.fold (fun acc name d =>
-    d.inputs.foldl (fun acc inp =>
-      match inp with
-      | WireInput.wire target =>
-        let cur := (acc[target]?).getD #[]
-        if cur.contains name then acc
-        else acc.insert target (cur.push name)
-      | _ => acc) acc)
-    {}
+/-- Record an input share: stored in `wireDefs` (so closure can see its value)
+    and `inputOrder`, but never in `wireOrder`, so it is not enumerated as a
+    probe target. -/
+def addInput (c : Circuit) (name : String) (d : WireDef) : Circuit :=
+  if c.hasWire name then c
+  else { c with
+    inputOrder := c.inputOrder.push name
+    wireDefs   := c.wireDefs.insert name d }
 
 def ppWireInput : WireInput → String
   | WireInput.leaf (VarType.Secret s) => s
@@ -86,11 +87,15 @@ def ppWireDef (d : WireDef) : String :=
   let sep := if d.isXor then " + " else " * "
   String.intercalate sep parts
 
+def ppLine (c : Circuit) (tag : String) (name : String) : String :=
+  match c.wireDefs[name]? with
+  | some d => s!"  {tag}{name} = {ppWireDef d}"
+  | none   => s!"  {tag}{name} = ??"
+
 def ppCircuit (c : Circuit) : String :=
-  String.intercalate "\n" (c.wireOrder.toList.map fun name =>
-    match c.wireDefs[name]? with
-    | some d => s!"  {name} = {ppWireDef d}"
-    | none   => s!"  {name} = ??")
+  let inputs := c.inputOrder.toList.map (ppLine c "[in] ")
+  let body   := c.wireOrder.toList.map (ppLine c "")
+  String.intercalate "\n" (inputs ++ body)
 
 end Circuit
 
@@ -105,36 +110,6 @@ structure GlobalDAG where
   deriving Inhabited
 
 namespace GlobalDAG
-
--- low-level DAG access
-
-@[inline]
-def addWire (g : GlobalDAG) (name : String) (id : NodeId) : GlobalDAG :=
-  { g with wires := g.wires.insert name id }
-
-@[inline]
-def wireId? (g : GlobalDAG) (name : String) : Option NodeId :=
-  g.wires[name]?
-
-def mkLeaf (g : GlobalDAG) (v : VarType) : GlobalDAG × NodeId :=
-  let (d, id) := g.dag.mkLeaf v
-  ({ g with dag := d }, id)
-
-def mkXor (g : GlobalDAG) (ids : Array NodeId) : GlobalDAG × NodeId :=
-  let (d, id) := g.dag.mkXor ids
-  ({ g with dag := d }, id)
-
-def mkAnd (g : GlobalDAG) (ids : Array NodeId) : GlobalDAG × NodeId :=
-  let (d, id) := g.dag.mkAnd ids
-  ({ g with dag := d }, id)
-
-def mkConst (g : GlobalDAG) (b : Bool) : GlobalDAG × NodeId :=
-  let (d, id) := g.dag.mkConst b
-  ({ g with dag := d }, id)
-
-@[inline]
-def ppNode (g : GlobalDAG) (id : NodeId) : String :=
-  g.dag.ppNode id
 
 -- high-level circuit-building API
 
@@ -161,9 +136,20 @@ def resolveInputs (g : GlobalDAG) (inputs : Array WireInput) : GlobalDAG × Arra
     (g, #[])
 
 /-- Declare a wire `name = XOR(inputs)`.  Records the WireDef in the Circuit,
-    builds the corresponding DAG node, and registers wire→NodeId. -/
+    builds the corresponding DAG node, and registers wire→NodeId.
+
+    **Faithfulness contract:** `inputs.size ≤ 2`.  The stored `Circuit` must be a
+    faithful 2-ary netlist, because in the probing model every 2-input gate
+    output is a distinct observable; an n-ary sum hides `n-2` intermediate
+    observables and would make the probe enumeration unsound.  Callers must
+    decompose n-ary sums into explicit named intermediates — and must choose the
+    association themselves, since it is security-relevant (e.g. for DOM-AND the
+    fresh mask must be grouped with a cross term, not added last). -/
 def addWireXor (g : GlobalDAG) (name : String) (inputs : Array WireInput) : GlobalDAG :=
-  if g.circuit.hasWire name then g
+  if inputs.size > 2 then
+    panic! s!"addWireXor: wire '{name}' has {inputs.size} inputs; gates must be 2-ary \
+              (decompose into named intermediates; the association is security-relevant)"
+  else if g.circuit.hasWire name then g
   else
     let (g, ids) := g.resolveInputs inputs
     let (dag, nid) := g.dag.mkXor ids
@@ -171,9 +157,12 @@ def addWireXor (g : GlobalDAG) (name : String) (inputs : Array WireInput) : Glob
              wires   := g.wires.insert name nid
              circuit := g.circuit.addWire name (WireDef.xor inputs) }
 
-/-- Declare a wire `name = AND(inputs)`. -/
+/-- Declare a wire `name = AND(inputs)`.  Same 2-ary faithfulness contract as
+    `addWireXor`. -/
 def addWireAnd (g : GlobalDAG) (name : String) (inputs : Array WireInput) : GlobalDAG :=
-  if g.circuit.hasWire name then g
+  if inputs.size > 2 then
+    panic! s!"addWireAnd: wire '{name}' has {inputs.size} inputs; gates must be 2-ary"
+  else if g.circuit.hasWire name then g
   else
     let (g, ids) := g.resolveInputs inputs
     let (dag, nid) := g.dag.mkAnd ids
@@ -181,14 +170,23 @@ def addWireAnd (g : GlobalDAG) (name : String) (inputs : Array WireInput) : Glob
              wires   := g.wires.insert name nid
              circuit := g.circuit.addWire name (WireDef.and inputs) }
 
-/-- Factor the expression of every registered wire, updating `g.wires` to
-    point at the factored root NodeIds.  Idempotent in practice: rerunning
-    on the same wires allocates no new DAG nodes. -/
-def factorAllWires (g : GlobalDAG) : GlobalDAG :=
-  g.wires.fold (fun g name oldId =>
-    let (dag', newId) := g.dag.factorNode oldId
-    { g with dag := dag', wires := g.wires.insert name newId })
-    g
+/-- Declare an *input share* `name = XOR(inputs)`: an atomically-encoded gadget
+    input.  Unlike `addWireXor`/`addWireAnd` this is **not** a probe target
+    (it is recorded in `circuit.inputOrder`, never `wireOrder`, so
+    `checkDProbing` will not enumerate it) and is **exempt from the 2-ary rule**,
+    because the encoding is given off-circuit and has no observable intermediate.
+
+    Its expression still enters the DAG and its randoms/secrets are registered, so
+    probes on the gadget *body* are verified against the full algebraic structure —
+    e.g. a body wire `a0 * b0` resolves to `r_a * r_b` through the share defs. -/
+def addShare (g : GlobalDAG) (name : String) (inputs : Array WireInput) : GlobalDAG :=
+  if g.wires.contains name then g
+  else
+    let (g, ids) := g.resolveInputs inputs
+    let (dag, nid) := g.dag.mkXor ids
+    { g with dag     := dag
+             wires   := g.wires.insert name nid
+             circuit := g.circuit.addInput name (WireDef.xor inputs) }
 
 end GlobalDAG
 
@@ -250,10 +248,6 @@ structure ProbeState where
 namespace ProbeState
 
 @[inline]
-def isStandalone (ps : ProbeState) (id : NodeId) : Bool :=
-  ps.totalParCount[id]? == some 1 && ps.xorParCount[id]? == some 1
-
-@[inline]
 def isRandom (ps : ProbeState) (dag : DAG) (id : NodeId) : Bool :=
   ps.rewrittenRandoms.contains id ||
   match dag.kind? id with
@@ -263,17 +257,18 @@ def isRandom (ps : ProbeState) (dag : DAG) (id : NodeId) : Bool :=
 end ProbeState
 
 def insertTodoByDepth (ps : ProbeState) (r : NodeId) : ProbeState :=
-  let d := (ps.mulDepth[r]?).getD 0
-  let pos := (ps.todo.findIdx? (fun rid => (ps.mulDepth[rid]?).getD 0 > d)).getD ps.todo.size
-  { ps with todo := ps.todo.insertIdx! pos r }
+  if ps.todo.contains r then ps
+  else
+    let d := (ps.mulDepth[r]?).getD 0
+    let pos := (ps.todo.findIdx? (fun rid => (ps.mulDepth[rid]?).getD 0 > d)).getD ps.todo.size
+    { ps with todo := ps.todo.insertIdx! pos r }
 
-/-- Probe initialisation by pre-factored root NodeIds.
+/-- Probe initialisation by root NodeIds.
 
-    Calls `factor` defensively even after `factorAllWires` has been run.
-    The cost is bounded: factoring is idempotent on already-factored subgraphs
-    (every `mkXor`/`mkAnd` hits an existing intern entry); however, the factor
-    chosen for a XOR node can in principle change when the set of *probe
-    roots* presented restricts the view of common factors. -/
+    Factoring is idempotent on already-factored subgraphs (every `mkXor`/`mkAnd`
+    hits an existing intern entry), so the cost is bounded; the factor chosen for
+    a XOR node can in principle change when the presented set of probe roots
+    restricts the view of common factors, which is why it is recomputed here. -/
 def initProbeByIds (g : GlobalDAG) (rootIds : Array NodeId) : GlobalDAG × ProbeState :=
   let (dag, factoredRoots) := g.dag.factor rootIds
   let g := { g with dag := dag }
@@ -359,17 +354,197 @@ partial def rewriteLoop (g : GlobalDAG) (ps : ProbeState) : GlobalDAG × ProbeSt
       rewriteLoop g' ps'
 
 -- ============================================================
+-- Complete fallback: full optimistic sampling (simple + general rule)
+--
+-- The reference-counted `rewriteLoop` above only fires the *simple* rule
+-- (eliminate a random with a unique additive occurrence).  That is sound but
+-- incomplete: it cannot certify tuples where the masking randoms each occur in
+-- two observations and a *linear dependency* between observations is needed to
+-- isolate one (e.g. high-order DOM-AND, where consecutive output partial sums
+-- differ by one masked cross-term).
+--
+-- This fallback implements the general rule by *actual substitution* on the
+-- explicit observation tuple: pick a random `r` and an additive occurrence
+-- `x1 = e + r` with `r ∉ vars(e)`, then substitute `r ← e+r` everywhere.  By the
+-- optimistic-sampling lemma this preserves the joint distribution; `mkXor`
+-- re-canonicalisation makes the matched occurrence collapse to a bare `r` while
+-- every other occurrence absorbs `e` (cancelling where they share it).  The
+-- simple rule is the special case where `r` occurs once; we try it first.
+--
+-- Termination: each general substitution retires one random into `used` and is
+-- never repeated for it (|used| ≤ #randoms); between general steps the simple
+-- rule strictly shrinks the tuple.  `fuel` is a safety net — exhausting it
+-- returns `false` (sound: only ever a false negative, never a false "secure").
+-- ============================================================
+
+/-- Does any `Secret` leaf occur in the sub-DAG rooted at `n`? -/
+partial def reachesSecretAux (dag : DAG) (vis : HashMap NodeId Bool) (n : NodeId)
+    : HashMap NodeId Bool × Bool :=
+  match vis[n]? with
+  | some b => (vis, b)
+  | none   =>
+    match dag.kind? n with
+    | some (NodeKind.leaf (VarType.Secret _)) => (vis.insert n true, true)
+    | some (NodeKind.xorNode ch)
+    | some (NodeKind.andNode ch) =>
+      let (vis, b) := ch.foldl (fun (v, acc) c =>
+        if acc then (v, true) else reachesSecretAux dag v c) (vis, false)
+      (vis.insert n b, b)
+    | _ => (vis.insert n false, false)
+
+/-- Probing `Test`: is the whole tuple free of secrets? -/
+def tupleHasSecret (dag : DAG) (tuple : Array NodeId) : Bool :=
+  (tuple.foldl (fun (v, acc) r =>
+    if acc then (v, true) else reachesSecretAux dag v r)
+    (({} : HashMap NodeId Bool), false)).2
+
+/-- Is `target` reachable from `n` (does `n`'s sub-DAG mention `target`)?  Used to
+    enforce the side-condition `r ∉ vars(e)`. -/
+partial def reachesNodeAux (dag : DAG) (target : NodeId) (vis : HashMap NodeId Bool) (n : NodeId)
+    : HashMap NodeId Bool × Bool :=
+  if n == target then (vis, true)
+  else match vis[n]? with
+  | some b => (vis, b)
+  | none   =>
+    match dag.kind? n with
+    | some (NodeKind.xorNode ch)
+    | some (NodeKind.andNode ch) =>
+      let (vis, b) := ch.foldl (fun (v, acc) c =>
+        if acc then (v, true) else reachesNodeAux dag target v c) (vis, false)
+      (vis.insert n b, b)
+    | _ => (vis.insert n false, false)
+
+@[inline]
+def nodeReaches (dag : DAG) (target n : NodeId) : Bool :=
+  (reachesNodeAux dag target ({} : HashMap NodeId Bool) n).2
+
+/-- Substitute leaf `r` by node `t` (= `e+r`) throughout `n`, single level (never
+    descending into `t`).  Memoised; `mkXor`/`mkAnd` re-canonicalise. -/
+partial def substNode (g : GlobalDAG) (r t : NodeId) (memo : HashMap NodeId NodeId) (n : NodeId)
+    : GlobalDAG × HashMap NodeId NodeId × NodeId :=
+  if n == r then (g, memo, t)
+  else match memo[n]? with
+  | some m => (g, memo, m)
+  | none   =>
+    match g.dag.kind? n with
+    | some (NodeKind.xorNode ch) =>
+      let (g, memo, ch') := ch.foldl (fun (g, memo, acc) c =>
+        let (g, memo, c') := substNode g r t memo c
+        (g, memo, acc.push c')) (g, memo, #[])
+      let (dag, m) := g.dag.mkXor ch'
+      ({ g with dag }, memo.insert n m, m)
+    | some (NodeKind.andNode ch) =>
+      let (g, memo, ch') := ch.foldl (fun (g, memo, acc) c =>
+        let (g, memo, c') := substNode g r t memo c
+        (g, memo, acc.push c')) (g, memo, #[])
+      let (dag, m) := g.dag.mkAnd ch'
+      ({ g with dag }, memo.insert n m, m)
+    | _ => (g, memo.insert n n, n)
+
+/-- Apply `r ← e+r` to every root (`e` given as a node). -/
+def substTupleByE (g : GlobalDAG) (tuple : Array NodeId) (r e : NodeId)
+    : GlobalDAG × Array NodeId :=
+  let (dag, t) := g.dag.mkXor #[e, r]
+  let g := { g with dag }
+  let (g, _, roots) := tuple.foldl (fun (g, memo, acc) root =>
+    let (g, memo, root') := substNode g r t memo root
+    (g, memo, acc.push root')) (g, ({} : HashMap NodeId NodeId), #[])
+  (g, roots)
+
+/-- `e` for an additive occurrence `x1 = e + r`: `x1`'s other children. -/
+def contextOf (g : GlobalDAG) (x1 r : NodeId) : GlobalDAG × NodeId :=
+  match g.dag.kind? x1 with
+  | some (NodeKind.xorNode ch) =>
+    let (dag, e) := g.dag.mkXor (ch.filter (· != r))
+    ({ g with dag }, e)
+  | _ => (g, x1)
+
+/-- Simple-rule candidate: a random occurring exactly once, additively, not a
+    root.  Among candidates prefer the least multiplicative depth (the additive
+    layer first), matching the fast path and maskVerif's increasing-depth order. -/
+def findSimpleRandom (dag : DAG) (s : DFSState) (rootSet : HashMap NodeId Unit)
+    : Option (NodeId × NodeId) := Id.run do
+  let mut best : Option (NodeId × NodeId × Nat) := none
+  for r in dag.randoms do
+    if rootSet.contains r then continue
+    if s.totalParCount[r]? == some 1 && s.xorParCount[r]? == some 1 then
+      let x1 := ((s.parents[r]?).getD #[])[0]!
+      let d  := (s.mulDepth[r]?).getD 0
+      match best with
+      | none            => best := some (r, x1, d)
+      | some (_, _, bd) => if d < bd then best := some (r, x1, d)
+  return best.map (fun (r, x1, _) => (r, x1))
+
+/-- General-rule candidate: a not-yet-used random occurring ≥ 2× that has an
+    additive parent `x1` whose other children do not mention it.  Prefer the
+    greatest multiplicative depth. -/
+def findGeneralRandom (dag : DAG) (s : DFSState) (rootSet used : HashMap NodeId Unit)
+    : Option (NodeId × NodeId) := Id.run do
+  let mut best : Option (NodeId × NodeId × Nat) := none
+  for r in dag.randoms do
+    if used.contains r then continue
+    let occ := (s.totalParCount[r]?).getD 0 + (if rootSet.contains r then 1 else 0)
+    if occ < 2 then continue
+    if (s.xorParCount[r]?).getD 0 == 0 then continue
+    let mut chosen : Option NodeId := none
+    for x1 in (s.parents[r]?).getD #[] do
+      if chosen.isSome then continue
+      match dag.kind? x1 with
+      | some (NodeKind.xorNode ch) =>
+        if (ch.filter (· != r)).all (fun c => !nodeReaches dag r c) then
+          chosen := some x1
+      | _ => pure ()
+    match chosen with
+    | none    => pure ()
+    | some x1 =>
+      let d := (s.mulDepth[r]?).getD 0
+      match best with
+      | none            => best := some (r, x1, d)
+      | some (_, _, bd) => if d < bd then best := some (r, x1, d)
+  return best.map (fun (r, x1, _) => (r, x1))
+
+/-- Full optimistic-sampling loop: simple rule first, then the general rule;
+    succeeds when no secret remains.  Re-factors each round to expose factors. -/
+partial def rewriteComplete (g : GlobalDAG) (tuple : Array NodeId)
+    (used : HashMap NodeId Unit) (fuel : Nat) : GlobalDAG × Bool :=
+  let (dag, tuple) := g.dag.factor tuple
+  let g := { g with dag }
+  if !tupleHasSecret g.dag tuple then (g, true)
+  else if fuel == 0 then (g, false)
+  else
+    let s : DFSState := tuple.foldl (dfsRoot g.dag) {}
+    let rootSet : HashMap NodeId Unit := tuple.foldl (fun m r => m.insert r ()) {}
+    match findSimpleRandom g.dag s rootSet with
+    | some (r, x1) =>
+      let (g, e)      := contextOf g x1 r
+      let (g, tuple') := substTupleByE g tuple r e
+      rewriteComplete g tuple' used (fuel - 1)
+    | none =>
+      match findGeneralRandom g.dag s rootSet used with
+      | some (r, x1) =>
+        let (g, e)      := contextOf g x1 r
+        let (g, tuple') := substTupleByE g tuple r e
+        rewriteComplete g tuple' (used.insert r ()) (fuel - 1)
+      | none => (g, false)
+
+/-- Entry point for the complete checker on a tuple of observation roots. -/
+def checkProbeComplete (g : GlobalDAG) (tuple : Array NodeId) : GlobalDAG × Bool :=
+  rewriteComplete g tuple {} ((g.dag.randoms.size + 2) * 256)
+
+-- ============================================================
 -- Examples
 -- ============================================================
 
-/-! ## DOM-AND circuit -/
+/-! ## DOM-AND circuit (faithful 2-ary; cross terms masked before recombination) -/
 def sharedDomAND : GlobalDAG := ({} : GlobalDAG)
   |>.addWireAnd "a0b0" #[WireInput.leaf (VarType.Secret "a0"), WireInput.leaf (VarType.Secret "b0")]
   |>.addWireAnd "a0b1" #[WireInput.leaf (VarType.Secret "a0"), WireInput.leaf (VarType.Secret "b1")]
   |>.addWireAnd "a1b0" #[WireInput.leaf (VarType.Secret "a1"), WireInput.leaf (VarType.Secret "b0")]
   |>.addWireAnd "a1b1" #[WireInput.leaf (VarType.Secret "a1"), WireInput.leaf (VarType.Secret "b1")]
-  |>.addWireXor "s0"   #[WireInput.wire "a0b0", .wire "a0b1", WireInput.leaf (VarType.Random "r")]
-  |>.addWireXor "s1"   #[WireInput.wire "a1b0", .wire "a1b1", WireInput.leaf (VarType.Random "r")]
+  |>.addWireXor "m0"   #[WireInput.wire "a0b1", WireInput.leaf (VarType.Random "r")]
+  |>.addWireXor "m1"   #[WireInput.wire "a1b0", WireInput.leaf (VarType.Random "r")]
+  |>.addWireXor "s0"   #[WireInput.wire "a0b0", WireInput.wire "m0"]
+  |>.addWireXor "s1"   #[WireInput.wire "a1b1", WireInput.wire "m1"]
 
 #eval IO.println (Circuit.ppCircuit sharedDomAND.circuit)
 
