@@ -265,20 +265,18 @@ def insertTodoByDepth (ps : ProbeState) (r : NodeId) : ProbeState :=
 
 /-- Probe initialisation by root NodeIds.
 
-    Factoring is idempotent on already-factored subgraphs (every `mkXor`/`mkAnd`
-    hits an existing intern entry), so the cost is bounded; the factor chosen for
-    a XOR node can in principle change when the presented set of probe roots
-    restricts the view of common factors, which is why it is recomputed here. -/
+    Following maskVerif, no multiplicative factoring is performed before
+    rewriting: the optimistic-sampling rule needs only the additive structure,
+    and the roots are fed to the DFS / rewrite engine as presented (already
+    hash-consed at circuit-construction time). -/
 def initProbeByIds (g : GlobalDAG) (rootIds : Array NodeId) : GlobalDAG × ProbeState :=
-  let (dag, factoredRoots) := g.dag.factor rootIds
-  let g := { g with dag := dag }
-  let s : DFSState := factoredRoots.foldl (dfsRoot g.dag) {}
-  let rootSet : HashMap NodeId Unit := factoredRoots.foldl (fun m r => m.insert r ()) {}
+  let s : DFSState := rootIds.foldl (dfsRoot g.dag) {}
+  let rootSet : HashMap NodeId Unit := rootIds.foldl (fun m r => m.insert r ()) {}
   let todoUnsorted := g.dag.randoms.filter (fun rId =>
     s.totalParCount[rId]? == some 1 && s.xorParCount[rId]? == some 1 && !rootSet.contains rId)
   let todo := todoUnsorted.qsort (fun a b => (s.mulDepth[a]?).getD 0 < (s.mulDepth[b]?).getD 0)
   (g, {
-    roots            := factoredRoots
+    roots            := rootIds
     xorParCount      := s.xorParCount
     totalParCount    := s.totalParCount
     mulDepth         := s.mulDepth
@@ -504,11 +502,10 @@ def findGeneralRandom (dag : DAG) (s : DFSState) (rootSet used : HashMap NodeId 
   return best.map (fun (r, x1, _) => (r, x1))
 
 /-- Full optimistic-sampling loop: simple rule first, then the general rule;
-    succeeds when no secret remains.  Re-factors each round to expose factors. -/
+    succeeds when no secret remains.  No multiplicative factoring is performed
+    (maskVerif works directly on the additive structure). -/
 partial def rewriteComplete (g : GlobalDAG) (tuple : Array NodeId)
     (used : HashMap NodeId Unit) (fuel : Nat) : GlobalDAG × Bool :=
-  let (dag, tuple) := g.dag.factor tuple
-  let g := { g with dag }
   if !tupleHasSecret g.dag tuple then (g, true)
   else if fuel == 0 then (g, false)
   else

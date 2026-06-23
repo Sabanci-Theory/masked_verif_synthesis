@@ -1,5 +1,6 @@
 import Verif.«n-aryDAG»
 import Verif.Rewrite
+import Verif.WitnessReplay
 import Std.Data.HashMap
 
 namespace verif
@@ -7,104 +8,18 @@ namespace verif
 open Std (HashMap)
 
 /-!
-# Wire-Level Probe Enumeration with Topological-Greedy Closure
+# Wire-Level Probe Enumeration with maskVerif Witness Replay
+
+The subset-space exploration (`checkAllSingle`/`checkAllMulti`) is maskVerif's
+worklist space-splitting (Barthe et al. 2015, Algorithm 6 / 2019 `check_all`).
+The safe-set *extension* it relies on is provided by witness replay
+(`WitnessReplay.lean`): a certified representative tuple leaves a replayable
+optimistic-sampling witness, which is replayed on the remaining candidates to
+grow the safe set `ŷ`.  This replaces the earlier topological-greedy closure;
+`Stats` keeps its field names and output format (where "closure" now denotes the
+replay-extended safe set `ŷ`) so results stay directly comparable across the
+closure and witness-replay branches.
 -/
-
--- ============================================================
--- Computability and topology
--- ============================================================
-
-@[inline]
-def isComputable (inp : WireInput) (known : HashMap String Unit) : Bool :=
-  match inp with
-  | .const _          => true
-  | .leaf (.Public _) => true
-  | .leaf (.Secret _) => false
-  | .leaf (.Random _) => false
-  | .wire name        => known.contains name
-
-@[inline]
-def isWireRef (inp : WireInput) : Option String :=
-  match inp with
-  | .wire name => some name
-  | _          => none
-
-structure Topology where
-  /-- `consumers[w]` = wires whose `WireDef` references `w`. -/
-  consumers : HashMap String (Array String)
-  /-- `wireIndex[nid]` = wires whose factored expression has NodeId `nid`. -/
-  wireIndex : HashMap NodeId (Array String)
-  deriving Inhabited
-
-def Topology.build (circ : Circuit) (fw : HashMap String NodeId) : Topology :=
-  let consumers := circ.wireDefs.fold (fun acc name d =>
-    d.inputs.foldl (fun acc inp =>
-      match inp with
-      | .wire target =>
-        let cur := (acc[target]?).getD #[]
-        if cur.contains name then acc
-        else acc.insert target (cur.push name)
-      | _ => acc) acc)
-    {}
-  let wireIndex := fw.fold (fun acc name nid =>
-    let cur := (acc[nid]?).getD #[]
-    acc.insert nid (cur.push name)) {}
-  { consumers, wireIndex }
-
--- ============================================================
--- Rule firing
--- ============================================================
-
-/-- Forward and backward rules at wire `name`. -/
-@[inline]
-def tryRule (circ : Circuit) (known : HashMap String Unit) (name : String)
-    : Option String :=
-  match circ.wireDefs[name]? with
-  | none   => none
-  | some d =>
-    if !known.contains name && d.inputs.all (fun i => isComputable i known) then
-      some name
-    else if d.isXor && known.contains name then
-      let nonComp := d.inputs.filter (fun i => !isComputable i known)
-      if nonComp.size == 1 then isWireRef nonComp[0]! else none
-    else none
-
-/-- Add `w` to known and worklist if not already present. -/
-@[inline]
-def pushIfNew (known : HashMap String Unit) (wl : Array String) (w : String)
-    : HashMap String Unit × Array String :=
-  if known.contains w then (known, wl)
-  else (known.insert w (), wl.push w)
-
--- ============================================================
--- Closure drain (FIFO worklist)
--- ============================================================
-
-/-- Drain the worklist forward from `pos`.  Returns updated state. -/
-partial def drainWorklist
-    (circ : Circuit) (topo : Topology) (fw : HashMap String NodeId)
-    (known : HashMap String Unit) (worklist : Array String) (pos : Nat)
-    : HashMap String Unit × Array String :=
-  if pos >= worklist.size then (known, worklist)
-  else
-    let w := worklist[pos]!
-    -- Equivalence: NodeId siblings.
-    let (known, worklist) := match fw[w]? with
-      | some nid =>
-        let equivs := (topo.wireIndex[nid]?).getD #[]
-        equivs.foldl (fun (k, wl) w' => pushIfNew k wl w') (known, worklist)
-      | none => (known, worklist)
-    -- Forward / backward at consumers of w.
-    let cs := (topo.consumers[w]?).getD #[]
-    let (known, worklist) := cs.foldl (fun (k, wl) u =>
-      match tryRule circ k u with
-      | some name => pushIfNew k wl name
-      | none      => (k, wl)) (known, worklist)
-    -- Backward at w itself.
-    let (known, worklist) := match tryRule circ known w with
-      | some name => pushIfNew known worklist name
-      | none      => (known, worklist)
-    drainWorklist circ topo fw known worklist (pos + 1)
 
 -- ============================================================
 -- Stats
@@ -287,100 +202,37 @@ def checkProbeByNames (g : GlobalDAG) (fw : HashMap String NodeId)
       (g, ps, sec2, stats.recordMiss key sec2)
 
 -- ============================================================
--- Topological-greedy probe construction
+-- Representative tuple
 -- ============================================================
 
-/-- Map each wire mentioned in `wl` to its factor index. -/
-def wireToFactorMap (wl : ProbeWorklist) : HashMap String Nat := Id.run do
-  let mut m : HashMap String Nat := {}
-  for idx in [:wl.size] do
-    for w in wl[idx]!.wires do
-      m := m.insert w idx
-  return m
-
-/-- Sibling-spend: a wire whose acquisition would complete a consumer gate
-    (all other inputs already computable), provided it belongs to a factor
-    with remaining budget. -/
-def findSiblingSpend
-    (circ : Circuit) (topo : Topology)
-    (wireToFactor : HashMap String Nat) (rem : Array Nat)
-    (known : HashMap String Unit) (worklist : Array String)
-    : Option (String × Nat) := Id.run do
-  for w in worklist do
-    let cs := (topo.consumers[w]?).getD #[]
-    for u in cs do
-      if known.contains u then continue
-      match circ.wireDefs[u]? with
-      | none => ()
-      | some d =>
-        let nonComp := d.inputs.filter (fun i => !isComputable i known)
-        if nonComp.size == 1 then
-          match isWireRef nonComp[0]! with
-          | some wname =>
-            if !known.contains wname then
-              match wireToFactor[wname]? with
-              | some idx => if rem[idx]! > 0 then return some (wname, idx)
-              | none => ()
-          | none => ()
-  return none
-
-/-- Pick the next credit to spend, by priority:
-    sibling-spend > fresh wire > leftover. -/
-def pickNext
-    (circ : Circuit) (topo : Topology) (wl : ProbeWorklist)
-    (wireToFactor : HashMap String Nat) (rem : Array Nat)
-    (chosen : Array String) (known : HashMap String Unit)
-    (worklist : Array String)
-    : Option (String × Nat) := Id.run do
-  -- Priority 1: sibling-spend.
-  match findSiblingSpend circ topo wireToFactor rem known worklist with
-  | some hit => return some hit
-  | none => ()
-  -- Priority 2: any fresh wire from a `rem>0` factor.
-  for idx in [:wl.size] do
-    if rem[idx]! > 0 then
-      for w in wl[idx]!.wires do
-        if !known.contains w then return some (w, idx)
-  -- Priority 3: leftover from a `rem>0` factor.
-  let chosenSet : HashMap String Unit :=
-    chosen.foldl (fun m w => m.insert w ()) {}
-  for idx in [:wl.size] do
-    if rem[idx]! > 0 then
-      for w in wl[idx]!.wires do
-        if !chosenSet.contains w then return some (w, idx)
-  return none
-
-/-- Build a probe set respecting per-factor count constraints.  Returns
-    `(chosen, closure)` where `closure` includes `chosen` plus everything
-    deducible from it (the free wires). -/
-partial def buildProbeTopological
-    (circ : Circuit) (topo : Topology) (fw : HashMap String NodeId)
-    (wl : ProbeWorklist) : Array String × Array String :=
-  let wireToFactor := wireToFactorMap wl
-  let initRem := wl.map (·.count)
-  let rec spend
-      (chosen : Array String) (rem : Array Nat)
-      (known : HashMap String Unit) (worklist : Array String) (pos : Nat)
-      : Array String × Array String :=
-    -- Bring closure up to date before deciding.
-    let (known, worklist) := drainWorklist circ topo fw known worklist pos
-    if rem.all (· == 0) then (chosen, worklist)
-    else match pickNext circ topo wl wireToFactor rem chosen known worklist with
-      | none => (chosen, worklist)
-      | some (w, idx) =>
-        let chosen' := chosen.push w
-        let rem'    := rem.set! idx (rem[idx]! - 1)
-        let (known', worklist') := pushIfNew known worklist w
-        -- Resume drain from the old end (where the new wire sits, if added).
-        spend chosen' rem' known' worklist' worklist.size
-  spend #[] initRem {} #[] 0
-
-/-- Closure-free probe construction (ablation): take the first `count` wires of
-    each factor, in order, with no drain.  Returns just that probe set; callers
-    use it as its own "closure" (no free wires), so the space-split still covers
-    every subset but prunes only the chosen tuple's own subsets. -/
+/-- The representative probe tuple of a worklist (maskVerif's `lfirst`): the
+    first `count` wires of each factor, in order.  This is the tuple sent to the
+    witness-capturing checker; the witness it yields is then replayed on the
+    remaining candidates to grow the safe set. -/
 def buildProbeSimple (wl : ProbeWorklist) : Array String :=
   wl.foldl (fun acc f => acc ++ f.wires.extract 0 f.count) #[]
+
+/-- Resolve the candidate wires (those present in the DAG) to `(name, NodeId)`
+    pairs for witness replay. -/
+@[inline]
+def candidatesOf (fw : HashMap String NodeId) (wires : Array String)
+    : Array (String × NodeId) :=
+  wires.filterMap (fun w => (fw[w]?).map (fun nid => (w, nid)))
+
+/-- Certify the representative `chosen` tuple and return its replay witness,
+    threading `Stats` like a `.chosen` discharge.  On a verdict-cache hit the
+    witness is still recomputed (the cache stores only the boolean), which is
+    rare since the space-split keeps chosen probes distinct. -/
+def checkChosenWithWitness (g : GlobalDAG) (fw : HashMap String NodeId)
+    (stats : Stats) (chosen : Array String)
+    : GlobalDAG × Bool × Witness × Stats :=
+  let ids := wireNamesToIds fw chosen
+  let key := setKey chosen
+  let (g, sec, witness) := checkWithWitness g ids
+  let stats := match stats.verdictCache[key]? with
+    | some _ => stats.recordHit .chosen
+    | none   => stats.recordMiss key sec
+  (g, sec, witness, stats)
 
 -- ============================================================
 -- CheckAll: same recursion structure, threaded with Stats
@@ -389,8 +241,8 @@ def buildProbeSimple (wl : ProbeWorklist) : Array String :=
 mutual
 
 partial def checkAllSingle
-    (g : GlobalDAG) (topo : Topology) (fw : HashMap String NodeId)
-    (stats : Stats) (count : Nat) (wires : Array String) (useClosure : Bool)
+    (g : GlobalDAG) (fw : HashMap String NodeId)
+    (stats : Stats) (count : Nat) (wires : Array String) (extend : Bool)
     : GlobalDAG × Stats × CheckResult :=
   if count == 0 then (g, stats, .Secure)
   else if wires.size < count then (g, stats, .Secure)
@@ -400,63 +252,68 @@ partial def checkAllSingle
     if allSec then (g, stats, .Secure)
     else
       let wl0 : ProbeWorklist := #[{ count, wires }]
-      let (chosen, closure) :=
-        if useClosure then buildProbeTopological g.circuit topo fw wl0
-        else let c := buildProbeSimple wl0; (c, c)
-      let (g, _, chosenSec, stats) := checkProbeByNames g fw stats .chosen chosen
+      -- Certify the representative tuple and capture its replay witness.
+      let chosen := buildProbeSimple wl0
+      let (g, chosenSec, witness, stats) := checkChosenWithWitness g fw stats chosen
       if !chosenSec then (g, stats, .Insecure chosen)
       else
-        let free  := closure.size - chosen.size
+        -- Grow the safe set ŷ: by witness replay (`extend`), or, in the naive
+        -- baseline, leave it as the chosen tuple itself (no extension).
+        let (g, safe) :=
+          if extend then extendByReplay g witness (candidatesOf fw wires)
+          else (g, chosen)
+        let free  := safe.size - chosen.size
         let stats := stats.addSuccess free
-        let stats := stats.recordClosure closure chosen (ppWorklist wl0)
-        let closureSet : HashMap String Unit :=
-          closure.foldl (fun m w => m.insert w ()) {}
-        let unsafeWires := wires.filter (fun w => !closureSet.contains w)
-        let (g, stats, r1) := checkAllSingle g topo fw stats count unsafeWires useClosure
+        let stats := stats.recordClosure safe chosen (ppWorklist wl0)
+        let safeSet : HashMap String Unit :=
+          safe.foldl (fun m w => m.insert w ()) {}
+        let unsafeWires := wires.filter (fun w => !safeSet.contains w)
+        let (g, stats, r1) := checkAllSingle g fw stats count unsafeWires extend
         if !r1.isSecure then (g, stats, r1)
         else
-          let safeWithinWires := wires.filter (fun w => closureSet.contains w)
+          let safeWithinWires := wires.filter (fun w => safeSet.contains w)
           let rec doMixed (g : GlobalDAG) (stats : Stats) (i : Nat)
               : GlobalDAG × Stats × CheckResult :=
             if i == 0 then (g, stats, .Secure)
             else
-              let (g, stats, ri) := checkAllMulti g topo fw stats
+              let (g, stats, ri) := checkAllMulti g fw stats
                 #[{ count := i,         wires := safeWithinWires },
-                  { count := count - i, wires := unsafeWires }] useClosure
+                  { count := count - i, wires := unsafeWires }] extend
               if !ri.isSecure then (g, stats, ri)
               else doMixed g stats (i - 1)
           doMixed g stats (count - 1)
 
 partial def checkAllMulti
-    (g : GlobalDAG) (topo : Topology) (fw : HashMap String NodeId)
-    (stats : Stats) (wl : ProbeWorklist) (useClosure : Bool)
+    (g : GlobalDAG) (fw : HashMap String NodeId)
+    (stats : Stats) (wl : ProbeWorklist) (extend : Bool)
     : GlobalDAG × Stats × CheckResult :=
   if isWorklistVacuous wl then (g, stats, .Secure)
   else
     let wl := cleanWorklist wl
     if wl.isEmpty then (g, stats, .Secure)
     else if wl.size == 1 then
-      checkAllSingle g topo fw stats wl[0]!.count wl[0]!.wires useClosure
+      checkAllSingle g fw stats wl[0]!.count wl[0]!.wires extend
     else
       let allWires := wl.foldl (fun acc f => acc ++ f.wires) #[]
       let (g, _, allSec, stats) := checkProbeByNames g fw stats .union allWires
       if allSec then (g, stats, .Secure)
       else
-        let (chosen, closure) :=
-          if useClosure then buildProbeTopological g.circuit topo fw wl
-          else let c := buildProbeSimple wl; (c, c)
-        let (g, _, chosenSec, stats) := checkProbeByNames g fw stats .chosen chosen
+        let chosen := buildProbeSimple wl
+        let (g, chosenSec, witness, stats) := checkChosenWithWitness g fw stats chosen
         if !chosenSec then (g, stats, .Insecure chosen)
         else
-          let free  := closure.size - chosen.size
+          let (g, safe) :=
+            if extend then extendByReplay g witness (candidatesOf fw allWires)
+            else (g, chosen)
+          let free  := safe.size - chosen.size
           let stats := stats.addSuccess free
-          let stats := stats.recordClosure closure chosen (ppWorklist wl)
-          let closureSet : HashMap String Unit :=
-            closure.foldl (fun m w => m.insert w ()) {}
+          let stats := stats.recordClosure safe chosen (ppWorklist wl)
+          let safeSet : HashMap String Unit :=
+            safe.foldl (fun m w => m.insert w ()) {}
           let unsafeWl : ProbeWorklist := wl.map (fun f =>
             { count := f.count
-              wires := f.wires.filter (fun w => !closureSet.contains w) })
-          let (g, stats, r1) := checkAllMulti g topo fw stats unsafeWl useClosure
+              wires := f.wires.filter (fun w => !safeSet.contains w) })
+          let (g, stats, r1) := checkAllMulti g fw stats unsafeWl extend
           if !r1.isSecure then (g, stats, r1)
           else
             let rec splitFactor (g : GlobalDAG) (stats : Stats) (jIdx : Nat)
@@ -464,8 +321,8 @@ partial def checkAllMulti
               if jIdx >= wl.size then (g, stats, .Secure)
               else
                 let f := wl[jIdx]!
-                let safeJ   := f.wires.filter (fun w => closureSet.contains w)
-                let unsafeJ := f.wires.filter (fun w => !closureSet.contains w)
+                let safeJ   := f.wires.filter (fun w => safeSet.contains w)
+                let unsafeJ := f.wires.filter (fun w => !safeSet.contains w)
                 let rec doI (g : GlobalDAG) (stats : Stats) (i : Nat)
                     : GlobalDAG × Stats × CheckResult :=
                   if i == 0 then splitFactor g stats (jIdx + 1)
@@ -475,7 +332,7 @@ partial def checkAllMulti
                         ++ #[{ count := i,           wires := safeJ },
                              { count := f.count - i, wires := unsafeJ }]
                         ++ (wl.extract (jIdx + 1) wl.size)
-                    let (g, stats, ri) := checkAllMulti g topo fw stats newWl useClosure
+                    let (g, stats, ri) := checkAllMulti g fw stats newWl extend
                     if !ri.isSecure then (g, stats, ri)
                     else doI g stats (i - 1)
                 doI g stats (f.count - 1)
@@ -487,12 +344,15 @@ end
 -- Public entry point
 -- ============================================================
 
-def checkDProbing (g : GlobalDAG) (probingOrder : Nat) (useClosure : Bool := true)
+/-- Verify `probingOrder`-probing security.  `extend := true` uses maskVerif
+    witness replay to grow each certified probe set; `extend := false` is the
+    naive baseline that performs no extension (each representative covers only
+    its own subsets), degrading the space-split toward exhaustive enumeration. -/
+def checkDProbing (g : GlobalDAG) (probingOrder : Nat) (extend : Bool := true)
     : GlobalDAG × HashMap String NodeId × CheckResult × Stats :=
   let fw := g.wires
-  let topo := Topology.build g.circuit fw
   let allWires := g.circuit.wireOrder
-  let (g, stats, res) := checkAllSingle g topo fw {} probingOrder allWires useClosure
+  let (g, stats, res) := checkAllSingle g fw {} probingOrder allWires extend
   (g, fw, res, stats)
 
 def ppResult (res : CheckResult) (order : Nat) : String :=
@@ -530,7 +390,7 @@ def circuitA : GlobalDAG := ({} : GlobalDAG)
   |>.addWireXor "w" #[WireInput.leaf (VarType.Secret "a"), WireInput.leaf (VarType.Random "r")]
 
 
-/-! ## Example 2 — XOR linear closure between wires (backward rule)
+/-! ## Example 2 — XOR linear dependency between wires
 
     w1 = a + r1,  w2 = b + r2,  w3 = w1 + w2
 
@@ -573,9 +433,9 @@ def circuitC : GlobalDAG := ({} : GlobalDAG)
   |>.addWireXor "w2" #[WireInput.leaf (VarType.Secret "a"), WireInput.leaf (VarType.Random "r")]
 
 
-/-! ## Example 5 — containment via shared intermediate + equivalence
+/-! ## Example 5 — containment via shared random (witness replay)
 
-    w1a = a + r,  w1 = w1a + b   (b is a Public leaf, hence computable)
+    w1a = a + r,  w1 = w1a + b   (b is a Public leaf)
     w2  = a + r
 
     Decomposing w1 to 2-ary exposes the intermediate `w1a = a + r`, whose DAG
@@ -810,23 +670,25 @@ def circuitE : GlobalDAG :=
                        WireInput.wire "y1z2", WireInput.wire "y2z1"]
   addWireXorChain g "F4" #[WireInput.wire "x1"]
 
-/-! ## Stats
+/-! ## Comparison: witness replay vs. the naive (no-extension) baseline
 
-    Runs each instance twice: once with the topological-greedy closure prune
-    (`useClosure := true`) and once closure-free (`useClosure := false`, where the
-    chosen tuple is its own "closure", so the space-split prunes only the chosen
-    tuple's subsets).  Both are sound and complete, so verdicts must agree; only
-    the discharge count and wall-clock differ. -/
+    Runs each instance twice — once with maskVerif witness replay growing every
+    certified probe set (`extend := true`), once with no extension at all
+    (`extend := false`), where each representative covers only its own subsets and
+    the space-split degrades toward exhaustive enumeration.  Both use the same
+    sound rewrite checker, so the verdicts can only diverge as `replay secure /
+    naive insecure`: a tuple the naive direct check fails to certify on its own,
+    but which replay certifies via a representative's witness. -/
 def ppAblation (name : String) (g : GlobalDAG) (order : Nat) : IO Unit := do
   let t0 ← IO.monoMsNow
-  let (_, _, resW, sW) := checkDProbing g order true
+  let (_, _, resR, sR) := checkDProbing g order true
   let t1 ← IO.monoMsNow
   let (_, _, resN, sN) := checkDProbing g order false
   let t2 ← IO.monoMsNow
   let v := fun (r : CheckResult) => if r.isSecure then "secure" else "INSECURE"
-  IO.println s!"{name} @ order {order}:  verdict (with closure) {v resW} ~ (agrees with no closure={resW.isSecure == resN.isSecure})"
-  IO.println s!"    with closure   : {t1 - t0} ms  |\n{sW.pp}\n"
-  IO.println s!"    without closure: {t2 - t1} ms  |\n{sN.pp}\n"
+  IO.println s!"{name} @ order {order}:  witness replay {v resR}  |  naive {v resN}  (agree={resR.isSecure == resN.isSecure})"
+  IO.println s!"    witness replay : {t1 - t0} ms\n{sR.pp}\n"
+  IO.println s!"    no extension   : {t2 - t1} ms\n{sN.pp}\n"
 
 
 #eval do
@@ -844,12 +706,5 @@ def ppAblation (name : String) (g : GlobalDAG) (order : Nat) : IO Unit := do
   -- ppAblation "7-share DOM-AND" sevenDomAND 5
   ppAblation "Example x + yz" circuitE 2
   ppAblation "Example x + yz" circuitE 3
-
-/-
-  output:
-  7-share DOM-AND @ order 5:  verdict secure (agree=true)
-      with closure   : 1072583 ms  | discharges 14256  certs 7113  free/main 0.532265
-      without closure: 842942 ms  | discharges 9298  certs 4633
--/
 
 end verif
