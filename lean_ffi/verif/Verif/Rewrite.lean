@@ -531,21 +531,4 @@ partial def rewriteComplete (g : GlobalDAG) (tuple : Array NodeId)
 def checkProbeComplete (g : GlobalDAG) (tuple : Array NodeId) : GlobalDAG × Bool :=
   rewriteComplete g tuple {} ((g.dag.randoms.size + 2) * 256)
 
--- ============================================================
--- Examples
--- ============================================================
-
-/-! ## DOM-AND circuit (faithful 2-ary; cross terms masked before recombination) -/
-def sharedDomAND : GlobalDAG := ({} : GlobalDAG)
-  |>.addWireAnd "a0b0" #[WireInput.leaf (VarType.Secret "a0"), WireInput.leaf (VarType.Secret "b0")]
-  |>.addWireAnd "a0b1" #[WireInput.leaf (VarType.Secret "a0"), WireInput.leaf (VarType.Secret "b1")]
-  |>.addWireAnd "a1b0" #[WireInput.leaf (VarType.Secret "a1"), WireInput.leaf (VarType.Secret "b0")]
-  |>.addWireAnd "a1b1" #[WireInput.leaf (VarType.Secret "a1"), WireInput.leaf (VarType.Secret "b1")]
-  |>.addWireXor "m0"   #[WireInput.wire "a0b1", WireInput.leaf (VarType.Random "r")]
-  |>.addWireXor "m1"   #[WireInput.wire "a1b0", WireInput.leaf (VarType.Random "r")]
-  |>.addWireXor "s0"   #[WireInput.wire "a0b0", WireInput.wire "m0"]
-  |>.addWireXor "s1"   #[WireInput.wire "a1b1", WireInput.wire "m1"]
-
-#eval IO.println (Circuit.ppCircuit sharedDomAND.circuit)
-
 end verif
