@@ -106,28 +106,95 @@ partial def drainWorklist
       | none      => (known, worklist)
     drainWorklist circ topo fw known worklist (pos + 1)
 
-/-- Closure of a seed set under all three rules. -/
-def closureWires
-    (circ : Circuit) (topo : Topology) (fw : HashMap String NodeId)
-    (Y : Array String) : Array String :=
-  let (known, wl) := Y.foldl
-    (fun (k, wl) w => pushIfNew k wl w) ({}, #[])
-  (drainWorklist circ topo fw known wl 0).2
-
 -- ============================================================
 -- Stats
 -- ============================================================
 
-structure Stats where
-  totalDischarges : Nat := 0
-  successMain     : Nat := 0
-  freeWiresSum    : Nat := 0
+/-- Canonical key of a *set* of wire names: dedup + sort + join.  Two probe sets
+    (or closures) equal as sets map to the same key regardless of insertion order
+    or multiplicity, so they can be looked up for redundancy. -/
+def setKey (names : Array String) : String :=
+  let sorted := names.qsort (fun a b => a < b)
+  let deduped := sorted.foldl (fun acc w =>
+    if acc.isEmpty || acc[acc.size - 1]! != w then acc.push w else acc)
+    (#[] : Array String)
+  String.intercalate "\n" deduped.toList
+
+/-- Which kind of discharge a probe set came from: the OptSampling large-set
+    `union` test, or a size-`d` `chosen` main probe.  Lets a repeat be attributed
+    to the discharge that actually re-did the work. -/
+inductive DischargeKind
+  | union
+  | chosen
   deriving Repr, Inhabited
+
+/-- One producer of a certified closure: the `chosen` size-`d` probe set that
+    yielded it, and a rendering of the `worklist` item(s) that produced that probe
+    set.  Used to report closure collisions (cause B) — distinct chosen sets that
+    drain to one and the same closure. -/
+structure ClosureWitness where
+  chosen   : Array String
+  worklist : String
+  deriving Inhabited
+
+structure Stats where
+  totalDischarges     : Nat := 0
+  successMain         : Nat := 0
+  freeWiresSum        : Nat := 0
+  /-- Repeated *union* (OptSampling large-set) discharges: a whole wire-collection
+      re-sent to the engine after it was already discharged.  This is the dominant
+      cause of redundancy — e.g. `checkAllMulti` re-discharging the reconstituted
+      `wires` set after the safe/unsafe split. -/
+  redundantUnionDischarges  : Nat := 0
+  /-- Repeated *chosen* (size-`d` main probe) discharges: the same chosen probe
+      re-sent.  Expected to be rare, since the space-split keeps chosen probes
+      distinct (it is bounded above by `redundantClosures`). -/
+  redundantChosenDischarges : Nat := 0
+  /-- Certified closures whose set of wires was already certified earlier.  This
+      is cause (B) — a *different* chosen probe set whose closure (and hence the
+      region of the observation space it covers) coincides with an earlier one. -/
+  redundantClosures   : Nat := 0
+  /-- Verdict memo: maps every distinct probe set (by `setKey`) to its
+      secure/insecure verdict, so a repeat is served from here instead of
+      re-running the rewrite engine. -/
+  verdictCache        : HashMap String Bool := {}
+  /-- Maps each certified closure (by `setKey`) to the distinct `chosen` probe
+      sets that produced it.  Keys = distinct closures; values with ≥2 entries are
+      the closure collisions: different `d`-wire probes draining to one closure. -/
+  closureWitnesses    : HashMap String (Array ClosureWitness) := {}
 
 namespace Stats
 
-@[inline] def addDischarge (s : Stats) : Stats :=
-  { s with totalDischarges := s.totalDischarges + 1 }
+/-- Record a *memo hit*: a probe set already in `verdictCache`, served without
+    re-running the engine.  Bumps `totalDischarges` (it is still a logical
+    discharge) and the repeat counter for `kind` (the engine run it avoided). -/
+def recordHit (s : Stats) (kind : DischargeKind) : Stats :=
+  let s := { s with totalDischarges := s.totalDischarges + 1 }
+  match kind with
+  | .union  => { s with redundantUnionDischarges  := s.redundantUnionDischarges  + 1 }
+  | .chosen => { s with redundantChosenDischarges := s.redundantChosenDischarges + 1 }
+
+/-- Record a *memo miss*: a probe set discharged for the first time.  Bumps
+    `totalDischarges` and stores its `verdict` for future lookups. -/
+def recordMiss (s : Stats) (key : String) (verdict : Bool) : Stats :=
+  { s with totalDischarges := s.totalDischarges + 1
+           verdictCache    := s.verdictCache.insert key verdict }
+
+/-- Record one certified `closure`, produced by probe set `chosen` coming from
+    `worklist`.  Bumps `redundantClosures` when this closure was certified before,
+    and remembers the *distinct* chosen probe sets behind each closure so that the
+    collisions (cause B) can be reported. -/
+def recordClosure (s : Stats) (closure chosen : Array String) (worklist : String) : Stats :=
+  let key := setKey closure
+  let w : ClosureWitness := { chosen, worklist }
+  match s.closureWitnesses[key]? with
+  | none    =>
+    { s with closureWitnesses := s.closureWitnesses.insert key #[w] }
+  | some ws =>
+    let chosenKey := setKey chosen
+    let ws' := if ws.any (fun u => setKey u.chosen == chosenKey) then ws else ws.push w
+    { s with redundantClosures := s.redundantClosures + 1
+             closureWitnesses  := s.closureWitnesses.insert key ws' }
 
 @[inline] def addSuccess (s : Stats) (free : Nat) : Stats :=
   { s with successMain  := s.successMain + 1
@@ -137,8 +204,24 @@ def avgFreeWires (s : Stats) : Float :=
   if s.successMain == 0 then 0.0
   else Float.ofNat s.freeWiresSum / Float.ofNat s.successMain
 
+/-- Render the closure collisions: closures certified by ≥2 distinct chosen probe
+    sets, with the producing probe set and worklist item for each.  Empty string
+    when there are none. -/
+def ppClosureCollisions (s : Stats) : String :=
+  let setStr (xs : List String) : String := "{" ++ String.intercalate ", " xs ++ "}"
+  let collisions := s.closureWitnesses.toList.filter (fun (_, ws) => ws.size >= 2)
+  if collisions.isEmpty then ""
+  else
+    let body := collisions.map (fun (key, ws) =>
+      let producers := ws.toList.map (fun w =>
+        "      chosen " ++ setStr w.chosen.toList ++ "  from worklist [" ++ w.worklist ++ "]")
+      "    closure " ++ setStr (key.splitOn "\n") ++ " (" ++ toString ws.size
+        ++ " distinct probes):\n" ++ String.intercalate "\n" producers)
+    "\n  closure collisions (" ++ toString collisions.length ++ "):\n"
+      ++ String.intercalate "\n" body
+
 def pp (s : Stats) : String :=
-  s!"  total discharges       : {s.totalDischarges}\n  successful main probes : {s.successMain}\n  free wires (sum)       : {s.freeWiresSum}\n  free wires (avg/main)  : {s.avgFreeWires}"
+  s!"  total discharges       : {s.totalDischarges}\n  distinct probe sets    : {s.verdictCache.size}\n  repeated discharges    : {s.redundantUnionDischarges + s.redundantChosenDischarges}  (union {s.redundantUnionDischarges}, chosen {s.redundantChosenDischarges})\n  distinct closures      : {s.closureWitnesses.size}\n  repeated closures      : {s.redundantClosures}\n  successful main probes : {s.successMain}\n  free wires (sum)       : {s.freeWiresSum}\n  free wires (avg/main)  : {s.avgFreeWires}" ++ s.ppClosureCollisions
 
 end Stats
 
@@ -152,6 +235,13 @@ structure ProbeFactor where
   deriving Repr, Inhabited
 
 abbrev ProbeWorklist := Array ProbeFactor
+
+/-- Compact rendering of a worklist for the collision report: each factor as
+    `count of {wires}`, factors separated by `;`. -/
+def ppFactor (f : ProbeFactor) : String :=
+  toString f.count ++ " of {" ++ String.intercalate ", " f.wires.toList ++ "}"
+def ppWorklist (wl : ProbeWorklist) : String :=
+  String.intercalate " ; " (wl.toList.map ppFactor)
 
 inductive CheckResult
   | Secure
@@ -182,15 +272,19 @@ def cleanWorklist (wl : ProbeWorklist) : ProbeWorklist :=
     so genuinely-secure tuples that need a linear dependency (e.g. high-order
     DOM-AND) are not reported as false counterexamples. -/
 def checkProbeByNames (g : GlobalDAG) (fw : HashMap String NodeId)
-    (stats : Stats) (names : Array String)
+    (stats : Stats) (kind : DischargeKind) (names : Array String)
     : GlobalDAG × ProbeState × Bool × Stats :=
-  let ids := wireNamesToIds fw names
-  let (g, ps) := initProbeByIds g ids
-  let (g, ps, sec) := rewriteLoop g ps
-  if sec then (g, ps, true, stats.addDischarge)
-  else
-    let (g, sec2) := checkProbeComplete g ps.roots
-    (g, ps, sec2, stats.addDischarge)
+  let key := setKey names
+  match stats.verdictCache[key]? with
+  | some sec => (g, (default : ProbeState), sec, stats.recordHit kind)
+  | none     =>
+    let ids := wireNamesToIds fw names
+    let (g, ps) := initProbeByIds g ids
+    let (g, ps, sec) := rewriteLoop g ps
+    if sec then (g, ps, true, stats.recordMiss key true)
+    else
+      let (g, sec2) := checkProbeComplete g ps.roots
+      (g, ps, sec2, stats.recordMiss key sec2)
 
 -- ============================================================
 -- Topological-greedy probe construction
@@ -281,6 +375,13 @@ partial def buildProbeTopological
         spend chosen' rem' known' worklist' worklist.size
   spend #[] initRem {} #[] 0
 
+/-- Closure-free probe construction (ablation): take the first `count` wires of
+    each factor, in order, with no drain.  Returns just that probe set; callers
+    use it as its own "closure" (no free wires), so the space-split still covers
+    every subset but prunes only the chosen tuple's own subsets. -/
+def buildProbeSimple (wl : ProbeWorklist) : Array String :=
+  wl.foldl (fun acc f => acc ++ f.wires.extract 0 f.count) #[]
+
 -- ============================================================
 -- CheckAll: same recursion structure, threaded with Stats
 -- ============================================================
@@ -289,26 +390,29 @@ mutual
 
 partial def checkAllSingle
     (g : GlobalDAG) (topo : Topology) (fw : HashMap String NodeId)
-    (stats : Stats) (count : Nat) (wires : Array String)
+    (stats : Stats) (count : Nat) (wires : Array String) (useClosure : Bool)
     : GlobalDAG × Stats × CheckResult :=
   if count == 0 then (g, stats, .Secure)
   else if wires.size < count then (g, stats, .Secure)
   else
     -- OptSampling union discharge.
-    let (g, _, allSec, stats) := checkProbeByNames g fw stats wires
+    let (g, _, allSec, stats) := checkProbeByNames g fw stats .union wires
     if allSec then (g, stats, .Secure)
     else
+      let wl0 : ProbeWorklist := #[{ count, wires }]
       let (chosen, closure) :=
-        buildProbeTopological g.circuit topo fw #[{ count, wires }]
-      let (g, _, chosenSec, stats) := checkProbeByNames g fw stats chosen
+        if useClosure then buildProbeTopological g.circuit topo fw wl0
+        else let c := buildProbeSimple wl0; (c, c)
+      let (g, _, chosenSec, stats) := checkProbeByNames g fw stats .chosen chosen
       if !chosenSec then (g, stats, .Insecure chosen)
       else
         let free  := closure.size - chosen.size
         let stats := stats.addSuccess free
+        let stats := stats.recordClosure closure chosen (ppWorklist wl0)
         let closureSet : HashMap String Unit :=
           closure.foldl (fun m w => m.insert w ()) {}
         let unsafeWires := wires.filter (fun w => !closureSet.contains w)
-        let (g, stats, r1) := checkAllSingle g topo fw stats count unsafeWires
+        let (g, stats, r1) := checkAllSingle g topo fw stats count unsafeWires useClosure
         if !r1.isSecure then (g, stats, r1)
         else
           let safeWithinWires := wires.filter (fun w => closureSet.contains w)
@@ -318,38 +422,41 @@ partial def checkAllSingle
             else
               let (g, stats, ri) := checkAllMulti g topo fw stats
                 #[{ count := i,         wires := safeWithinWires },
-                  { count := count - i, wires := unsafeWires }]
+                  { count := count - i, wires := unsafeWires }] useClosure
               if !ri.isSecure then (g, stats, ri)
               else doMixed g stats (i - 1)
           doMixed g stats (count - 1)
 
 partial def checkAllMulti
     (g : GlobalDAG) (topo : Topology) (fw : HashMap String NodeId)
-    (stats : Stats) (wl : ProbeWorklist)
+    (stats : Stats) (wl : ProbeWorklist) (useClosure : Bool)
     : GlobalDAG × Stats × CheckResult :=
   if isWorklistVacuous wl then (g, stats, .Secure)
   else
     let wl := cleanWorklist wl
     if wl.isEmpty then (g, stats, .Secure)
     else if wl.size == 1 then
-      checkAllSingle g topo fw stats wl[0]!.count wl[0]!.wires
+      checkAllSingle g topo fw stats wl[0]!.count wl[0]!.wires useClosure
     else
       let allWires := wl.foldl (fun acc f => acc ++ f.wires) #[]
-      let (g, _, allSec, stats) := checkProbeByNames g fw stats allWires
+      let (g, _, allSec, stats) := checkProbeByNames g fw stats .union allWires
       if allSec then (g, stats, .Secure)
       else
-        let (chosen, closure) := buildProbeTopological g.circuit topo fw wl
-        let (g, _, chosenSec, stats) := checkProbeByNames g fw stats chosen
+        let (chosen, closure) :=
+          if useClosure then buildProbeTopological g.circuit topo fw wl
+          else let c := buildProbeSimple wl; (c, c)
+        let (g, _, chosenSec, stats) := checkProbeByNames g fw stats .chosen chosen
         if !chosenSec then (g, stats, .Insecure chosen)
         else
           let free  := closure.size - chosen.size
           let stats := stats.addSuccess free
+          let stats := stats.recordClosure closure chosen (ppWorklist wl)
           let closureSet : HashMap String Unit :=
             closure.foldl (fun m w => m.insert w ()) {}
           let unsafeWl : ProbeWorklist := wl.map (fun f =>
             { count := f.count
               wires := f.wires.filter (fun w => !closureSet.contains w) })
-          let (g, stats, r1) := checkAllMulti g topo fw stats unsafeWl
+          let (g, stats, r1) := checkAllMulti g topo fw stats unsafeWl useClosure
           if !r1.isSecure then (g, stats, r1)
           else
             let rec splitFactor (g : GlobalDAG) (stats : Stats) (jIdx : Nat)
@@ -368,7 +475,7 @@ partial def checkAllMulti
                         ++ #[{ count := i,           wires := safeJ },
                              { count := f.count - i, wires := unsafeJ }]
                         ++ (wl.extract (jIdx + 1) wl.size)
-                    let (g, stats, ri) := checkAllMulti g topo fw stats newWl
+                    let (g, stats, ri) := checkAllMulti g topo fw stats newWl useClosure
                     if !ri.isSecure then (g, stats, ri)
                     else doI g stats (i - 1)
                 doI g stats (f.count - 1)
@@ -380,12 +487,12 @@ end
 -- Public entry point
 -- ============================================================
 
-def checkDProbing (g : GlobalDAG) (probingOrder : Nat)
+def checkDProbing (g : GlobalDAG) (probingOrder : Nat) (useClosure : Bool := true)
     : GlobalDAG × HashMap String NodeId × CheckResult × Stats :=
   let fw := g.wires
   let topo := Topology.build g.circuit fw
   let allWires := g.circuit.wireOrder
-  let (g, stats, res) := checkAllSingle g topo fw {} probingOrder allWires
+  let (g, stats, res) := checkAllSingle g topo fw {} probingOrder allWires useClosure
   (g, fw, res, stats)
 
 def ppResult (res : CheckResult) (order : Nat) : String :=
@@ -399,6 +506,22 @@ def ppResult (res : CheckResult) (order : Nat) : String :=
 -- ============================================================
 -- Examples
 -- ============================================================
+
+partial def addWireXorChain (g : GlobalDAG) (out : String) (terms : Array WireInput) : GlobalDAG :=
+  if terms.size == 0 then
+    g.addWireXor out #[.const false]
+  else if terms.size == 1 then
+    g.addWireXor out #[terms[0]!]
+  else
+    let firstName := if terms.size == 2 then out else s!"{out}m0"
+    let g := g.addWireXor firstName #[terms[0]!, terms[1]!]
+    let rec go (g : GlobalDAG) (acc : String) (idx : Nat) : GlobalDAG :=
+      if idx >= terms.size then g
+      else
+        let name := if idx + 1 == terms.size then out else s!"{out}m{idx - 1}"
+        let g := g.addWireXor name #[.wire acc, terms[idx]!]
+        go g name (idx + 1)
+    go g firstName 2
 
 /-! ## Example 1 — first-order masked wire, secure at order 1 -/
 def circuit1 : GlobalDAG := ({} : GlobalDAG)
@@ -608,21 +731,6 @@ def circuitG : GlobalDAG := ({} : GlobalDAG)
   IO.println stats3.pp
 
 /-! ### Example 8 — DOM-AND with 7 shares -/
-partial def addWireXorChain (g : GlobalDAG) (out : String) (terms : Array WireInput) : GlobalDAG :=
-  if terms.size == 0 then
-    g.addWireXor out #[.const false]
-  else if terms.size == 1 then
-    g.addWireXor out #[terms[0]!]
-  else
-    let firstName := if terms.size == 2 then out else s!"{out}m0"
-    let g := g.addWireXor firstName #[terms[0]!, terms[1]!]
-    let rec go (g : GlobalDAG) (acc : String) (idx : Nat) : GlobalDAG :=
-      if idx >= terms.size then g
-      else
-        let name := if idx + 1 == terms.size then out else s!"{out}m{idx - 1}"
-        let g := g.addWireXor name #[.wire acc, terms[idx]!]
-        go g name (idx + 1)
-    go g firstName 2
 def dom7Indices : Array Nat := #[0, 1, 2, 3, 4, 5, 6]
 def dom7RandomIndices : Array Nat := #[0, 1, 2, 3, 4, 5]
 def dom7Pairs : Array (Nat × Nat) :=
@@ -688,7 +796,7 @@ def circuitH : GlobalDAG :=
   let g := addDom7MaskedCrossTerms g
   addDom7Outputs g
 
-/-
+/- it takes too long so we keep it commented out
 #eval do
   IO.println "=== H: 7-share DOM-AND ==="
   let t0 := (← IO.monoMsNow)
@@ -709,12 +817,158 @@ def circuitH : GlobalDAG :=
     free wires (avg/main)  : 0.575985
 -/
 
-end verif
+/-! ## Example 9 — 4-share masking of the quadratic function F(x,y,z) = x + (y * z)
 
--- investigate why closures suck, they shouldn't
--- check whether example 9 would be verified in maskverif
--- check what Barthe does in order not to do redundant work       --> it doesn't do anything
--- reimplement witness replay in place of closures then compare
--- get maskverif working
--- implement the (A, V, k) worklist representation and compare
--- investigate redundant worklist items (due to closures)
+    This is a 4-share Threshold Implementation of a quadratic Boolean
+    function in three input variables.
+
+    Construction:
+      Inputs:  three secrets x, y, z, each in 4 shares.
+
+      Output shares:
+        F_1 = x_2 + ∑_{i,j ∈ {2,3,4}} y_i * z_j
+        F_2 = x_3 + y_1 * z_3 + y_1 * z_4 + y_3 * z_1
+                  + y_4 * z_1 + y_1 * z_1
+        F_3 = x_4 + y_1 * z_2 + y_2 * z_1
+        F_4 = x_1
+
+      Correctness: ∑_i F_i = x + y * z -/
+def circuitI : GlobalDAG :=
+  let g : GlobalDAG := ({} : GlobalDAG)
+  -- share production for x
+  |>.addShare "x1" #[WireInput.leaf (VarType.Random "r_x0")]
+  |>.addShare "x2" #[WireInput.leaf (VarType.Random "r_x1")]
+  |>.addShare "x3" #[WireInput.leaf (VarType.Random "r_x2")]
+  |>.addShare "x4" #[WireInput.leaf (VarType.Secret "x"),
+                     WireInput.leaf (VarType.Random "r_x0"),
+                     WireInput.leaf (VarType.Random "r_x1"),
+                     WireInput.leaf (VarType.Random "r_x2")]
+  -- share production for y
+  |>.addShare "y1" #[WireInput.leaf (VarType.Random "r_y0")]
+  |>.addShare "y2" #[WireInput.leaf (VarType.Random "r_y1")]
+  |>.addShare "y3" #[WireInput.leaf (VarType.Random "r_y2")]
+  |>.addShare "y4" #[WireInput.leaf (VarType.Secret "y"),
+                     WireInput.leaf (VarType.Random "r_y0"),
+                     WireInput.leaf (VarType.Random "r_y1"),
+                     WireInput.leaf (VarType.Random "r_y2")]
+  -- share production for z
+  |>.addShare "z1" #[WireInput.leaf (VarType.Random "r_z0")]
+  |>.addShare "z2" #[WireInput.leaf (VarType.Random "r_z1")]
+  |>.addShare "z3" #[WireInput.leaf (VarType.Random "r_z2")]
+  |>.addShare "z4" #[WireInput.leaf (VarType.Secret "z"),
+                     WireInput.leaf (VarType.Random "r_z0"),
+                     WireInput.leaf (VarType.Random "r_z1"),
+                     WireInput.leaf (VarType.Random "r_z2")]
+  -- all 16 cross-products y_i * z_j
+  |>.addWireAnd "y2z2" #[WireInput.wire "y2", WireInput.wire "z2"]
+  |>.addWireAnd "y2z3" #[WireInput.wire "y2", WireInput.wire "z3"]
+  |>.addWireAnd "y2z4" #[WireInput.wire "y2", WireInput.wire "z4"]
+  |>.addWireAnd "y3z2" #[WireInput.wire "y3", WireInput.wire "z2"]
+  |>.addWireAnd "y3z3" #[WireInput.wire "y3", WireInput.wire "z3"]
+  |>.addWireAnd "y3z4" #[WireInput.wire "y3", WireInput.wire "z4"]
+  |>.addWireAnd "y4z2" #[WireInput.wire "y4", WireInput.wire "z2"]
+  |>.addWireAnd "y4z3" #[WireInput.wire "y4", WireInput.wire "z3"]
+  |>.addWireAnd "y4z4" #[WireInput.wire "y4", WireInput.wire "z4"]
+  |>.addWireAnd "y1z3" #[WireInput.wire "y1", WireInput.wire "z3"]
+  |>.addWireAnd "y1z4" #[WireInput.wire "y1", WireInput.wire "z4"]
+  |>.addWireAnd "y3z1" #[WireInput.wire "y3", WireInput.wire "z1"]
+  |>.addWireAnd "y4z1" #[WireInput.wire "y4", WireInput.wire "z1"]
+  |>.addWireAnd "y1z1" #[WireInput.wire "y1", WireInput.wire "z1"]
+  |>.addWireAnd "y1z2" #[WireInput.wire "y1", WireInput.wire "z2"]
+  |>.addWireAnd "y2z1" #[WireInput.wire "y2", WireInput.wire "z1"]
+  -- output shares
+  let g := addWireXorChain g "F1" #[WireInput.wire "x2",
+                       WireInput.wire "y2z2", WireInput.wire "y2z3", WireInput.wire "y2z4",
+                       WireInput.wire "y3z2", WireInput.wire "y3z3", WireInput.wire "y3z4",
+                       WireInput.wire "y4z2", WireInput.wire "y4z3", WireInput.wire "y4z4"]
+  let g := addWireXorChain g "F2" #[WireInput.wire "x3",
+                       WireInput.wire "y1z3", WireInput.wire "y1z4",
+                       WireInput.wire "y3z1", WireInput.wire "y4z1",
+                       WireInput.wire "y1z1"]
+  let g := addWireXorChain g "F3" #[WireInput.wire "x4",
+                       WireInput.wire "y1z2", WireInput.wire "y2z1"]
+  addWireXorChain g "F4" #[WireInput.wire "x1"]
+
+#eval do
+  IO.println "=== 4-share masked version of x + yz ==="
+  let t0 := (← IO.monoMsNow)
+  let (_, _, res1, stats1) := checkDProbing circuitI 1
+  let t1 := (← IO.monoMsNow)
+  IO.println s!"{ppResult res1 1}  [{t1 - t0} ms]"
+  IO.println stats1.pp
+  let (_, _, res2, stats2) := checkDProbing circuitI 2
+  let t2 := (← IO.monoMsNow)
+  IO.println s!"{ppResult res2 2}  [{t2 - t1} ms]"
+  IO.println stats2.pp
+  let (_, _, res3, stats3) := checkDProbing circuitI 3
+  let t3 := (← IO.monoMsNow)
+  IO.println s!"{ppResult res3 3}  [{t3 - t2} ms]"
+  IO.println stats3.pp
+  let (_, _, res4, stats4) := checkDProbing circuitI 4
+  let t4 := (← IO.monoMsNow)
+  IO.println s!"{ppResult res4 4}  [{t4 - t3} ms]"
+  IO.println stats4.pp
+
+/-! ## Closure ablation — is the closure-based prune worth its cost?
+
+    Runs each instance twice: once with the topological-greedy closure prune
+    (`useClosure := true`) and once closure-free (`useClosure := false`, where the
+    chosen tuple is its own "closure", so the space-split prunes only the chosen
+    tuple's subsets).  Both are sound and complete, so verdicts must agree; only
+    the discharge count and wall-clock differ. -/
+def ppAblation (name : String) (g : GlobalDAG) (order : Nat) : IO Unit := do
+  let t0 ← IO.monoMsNow
+  let (_, _, resW, sW) := checkDProbing g order true
+  let t1 ← IO.monoMsNow
+  let (_, _, resN, sN) := checkDProbing g order false
+  let t2 ← IO.monoMsNow
+  let v := fun (r : CheckResult) => if r.isSecure then "secure" else "INSECURE"
+  IO.println s!"{name} @ order {order}:  verdict {v resW} (agree={resW.isSecure == resN.isSecure})"
+  IO.println s!"    with closure   : {t1 - t0} ms  | discharges {sW.totalDischarges}  certs {sW.successMain}  free/main {sW.avgFreeWires}"
+  IO.println s!"    without closure: {t2 - t1} ms  | discharges {sN.totalDischarges}  certs {sN.successMain}"
+
+/-
+#eval do
+  IO.println "=== Closure ablation (WITH vs WITHOUT closure pruning) ==="
+  ppAblation "3-share DOM-AND" circuitG 1
+  ppAblation "3-share DOM-AND" circuitG 2
+  ppAblation "3-share DOM-AND" circuitG 3
+  ppAblation "Q412" circuitF 1
+  ppAblation "Q412" circuitF 2
+  ppAblation "Ex9 x+yz" circuitI 1
+  ppAblation "Ex9 x+yz" circuitI 2
+  ppAblation "Ex9 x+yz" circuitI 3
+  ppAblation "7-share DOM-AND" circuitH 5
+
+  output:
+  === Closure ablation (WITH vs WITHOUT closure pruning) ===
+3-share DOM-AND @ order 1:  verdict secure (agree=true)
+    with closure   : 431 ms  | discharges 35  certs 17  free/main 0.000000
+    without closure: 388 ms  | discharges 35  certs 17
+3-share DOM-AND @ order 2:  verdict secure (agree=true)
+    with closure   : 325 ms  | discharges 54  certs 26  free/main 0.230769
+    without closure: 422 ms  | discharges 54  certs 26
+3-share DOM-AND @ order 3:  verdict INSECURE (agree=true)
+    with closure   : 71 ms  | discharges 8  certs 3  free/main 2.000000
+    without closure: 34 ms  | discharges 2  certs 0
+Q412 @ order 1:  verdict secure (agree=true)
+    with closure   : 312 ms  | discharges 47  certs 23  free/main 0.434783
+    without closure: 382 ms  | discharges 59  certs 29
+Q412 @ order 2:  verdict INSECURE (agree=true)
+    with closure   : 93 ms  | discharges 10  certs 4  free/main 1.500000
+    without closure: 25 ms  | discharges 2  certs 0
+Ex9 x+yz @ order 1:  verdict secure (agree=true)
+    with closure   : 1466 ms  | discharges 55  certs 27  free/main 0.000000
+    without closure: 1470 ms  | discharges 55  certs 27
+Ex9 x+yz @ order 2:  verdict secure (agree=true)
+    with closure   : 1326 ms  | discharges 81  certs 40  free/main 0.250000
+    without closure: 1425 ms  | discharges 84  certs 41
+Ex9 x+yz @ order 3:  verdict INSECURE (agree=false)
+    with closure   : 1409 ms  | discharges 139  certs 66  free/main 0.560606
+    without closure: 2374 ms  | discharges 195  certs 96
+7-share DOM-AND @ order 5:  verdict secure (agree=true)
+    with closure   : 1072583 ms  | discharges 14256  certs 7113  free/main 0.532265
+    without closure: 842942 ms  | discharges 9298  certs 4633
+-/
+
+end verif
