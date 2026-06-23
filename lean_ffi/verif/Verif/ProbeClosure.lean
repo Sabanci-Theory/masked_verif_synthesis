@@ -507,6 +507,7 @@ def ppResult (res : CheckResult) (order : Nat) : String :=
 -- Examples
 -- ============================================================
 
+-- helper function to build a chain of XORs from an array of terms for some examples
 partial def addWireXorChain (g : GlobalDAG) (out : String) (terms : Array WireInput) : GlobalDAG :=
   if terms.size == 0 then
     g.addWireXor out #[.const false]
@@ -523,16 +524,11 @@ partial def addWireXorChain (g : GlobalDAG) (out : String) (terms : Array WireIn
         go g name (idx + 1)
     go g firstName 2
 
+
 /-! ## Example 1 — first-order masked wire, secure at order 1 -/
-def circuit1 : GlobalDAG := ({} : GlobalDAG)
+def circuitA : GlobalDAG := ({} : GlobalDAG)
   |>.addWireXor "w" #[WireInput.leaf (VarType.Secret "a"), WireInput.leaf (VarType.Random "r")]
 
-#eval do
-  let (g, _, res, stats) := checkDProbing circuit1 1
-  IO.println "=== Example 1 ==="
-  IO.println (Circuit.ppCircuit g.circuit)
-  IO.println (ppResult res 1)
-  IO.println stats.pp
 
 /-! ## Example 2 — XOR linear closure between wires (backward rule)
 
@@ -543,24 +539,15 @@ def circuit1 : GlobalDAG := ({} : GlobalDAG)
     (driven by `drainWorklist`) sees w3 known, all leaf inputs computable
     (there are none), exactly one non-computable wire-input (w2), so w2
     enters known. -/
-def circuit2 : GlobalDAG := ({} : GlobalDAG)
+def circuitB : GlobalDAG := ({} : GlobalDAG)
   |>.addWireXor "w1" #[WireInput.leaf (VarType.Secret "a"), WireInput.leaf (VarType.Random "r1")]
   |>.addWireXor "w2" #[WireInput.leaf (VarType.Secret "b"), WireInput.leaf (VarType.Random "r2")]
   |>.addWireXor "w3" #[WireInput.wire "w1", WireInput.wire "w2"]
 
-#eval do
-  let (_, _, res1, stats1) := checkDProbing circuit2 1
-  let (g, _, res2, stats2) := checkDProbing circuit2 2
-  IO.println "=== Example 2 ==="
-  IO.println (Circuit.ppCircuit g.circuit)
-  IO.println (ppResult res1 1)
-  IO.println stats1.pp
-  IO.println (ppResult res2 2)
-  IO.println stats2.pp
 
 /-! ## Example 3 — DOM-AND -/
-def domAND : GlobalDAG := ({} : GlobalDAG)
-  -- Input shares of a and b (atomically encoded; not probe targets).
+def twoDomAND : GlobalDAG := ({} : GlobalDAG)
+  -- Input shares of a and b.
   |>.addShare "a0" #[WireInput.leaf (VarType.Random "r_a")]
   |>.addShare "a1" #[WireInput.leaf (VarType.Secret "a"), WireInput.leaf (VarType.Random "r_a")]
   |>.addShare "b0" #[WireInput.leaf (VarType.Random "r_b")]
@@ -575,31 +562,16 @@ def domAND : GlobalDAG := ({} : GlobalDAG)
   |>.addWireXor "s0"   #[WireInput.wire "a0b0", WireInput.wire "m0"]
   |>.addWireXor "s1"   #[WireInput.wire "a1b1", WireInput.wire "m1"]
 
-#eval do
-  let (_, _, res1, stats1) := checkDProbing domAND 1
-  let (g, _, res2, stats2) := checkDProbing domAND 2
-  IO.println "=== Example 3 ==="
-  IO.println (Circuit.ppCircuit g.circuit)
-  IO.println (ppResult res1 1)
-  IO.println stats1.pp
-  IO.println (ppResult res2 2)
-  IO.println stats2.pp
 
 /-! ## Example 4
 
     Two wires whose factored expressions canonicalise to the same NodeId.
     The equivalence rule fires immediately on the second wire when the first
     is in known. -/
-def circuit4 : GlobalDAG := ({} : GlobalDAG)
+def circuitC : GlobalDAG := ({} : GlobalDAG)
   |>.addWireXor "w1" #[WireInput.leaf (VarType.Secret "a"), WireInput.leaf (VarType.Random "r")]
   |>.addWireXor "w2" #[WireInput.leaf (VarType.Secret "a"), WireInput.leaf (VarType.Random "r")]
 
-#eval do
-  let (g, _, res, stats) := checkDProbing circuit4 1
-  IO.println "=== Example 4 ==="
-  IO.println (Circuit.ppCircuit g.circuit)
-  IO.println (ppResult res 1)
-  IO.println stats.pp
 
 /-! ## Example 5 — containment via shared intermediate + equivalence
 
@@ -613,20 +585,14 @@ def circuit4 : GlobalDAG := ({} : GlobalDAG)
     w1a enters `known`; the equivalence rule then adds w2, since w2 shares w1a's
     NodeId.  This is the faithful 2-ary version of what an n-ary symm-diff rule
     would have done on the inputs directly. -/
-def circuit5 : GlobalDAG := ({} : GlobalDAG)
+def circuitD : GlobalDAG := ({} : GlobalDAG)
   |>.addWireXor "w1a" #[WireInput.leaf (VarType.Secret "a"), WireInput.leaf (VarType.Random "r")]
   |>.addWireXor "w1"  #[WireInput.wire "w1a", WireInput.leaf (VarType.Public "b")]
   |>.addWireXor "w2"  #[WireInput.leaf (VarType.Secret "a"), WireInput.leaf (VarType.Random "r")]
 
-#eval do
-  let (g, _, res, stats) := checkDProbing circuit5 1
-  IO.println "=== Example 5 ==="
-  IO.println (Circuit.ppCircuit g.circuit)
-  IO.println (ppResult res 1)
-  IO.println stats.pp
 
 /-! ## Example 6 — Q⁴₁₂ quadratic bijection -/
-def circuitF : GlobalDAG := ({} : GlobalDAG)
+def q_12 : GlobalDAG := ({} : GlobalDAG)
   -- input shares (atomically encoded; not probe targets)
   |>.addShare "a1" #[WireInput.leaf (VarType.Secret "a"), WireInput.leaf (VarType.Random "r0")]
   |>.addShare "a2" #[WireInput.leaf (VarType.Random "r0")]
@@ -670,20 +636,9 @@ def circuitF : GlobalDAG := ({} : GlobalDAG)
   |>.addWireXor "tb1" #[WireInput.wire "t1"]
   |>.addWireXor "tb2" #[WireInput.wire "t2"]
 
-#eval do
-  let (g, _, res1, stats1) := checkDProbing circuitF 1
-  IO.println "=== F: shared Q⁴₁₂ (no extra r) ==="
-  IO.println (Circuit.ppCircuit g.circuit)
-  IO.println (ppResult res1 1)
-  IO.println stats1.pp
-  let (_, _, res2, stats2) := checkDProbing circuitF 2
-  IO.println (ppResult res2 2)
-  IO.println stats2.pp
 
-
-/-! ### Example 7 — DOM-AND with 3 shares -/
-def circuitG : GlobalDAG := ({} : GlobalDAG)
-  -- input shares (atomically encoded; not probe targets).
+/-! ## Example 7 — DOM-AND with 3 shares -/
+def threeDomAND : GlobalDAG := ({} : GlobalDAG)
   -- 3-sharing: a = a0+a1+a2, b = b0+b1+b2.
   |>.addShare "a0" #[.leaf (.Random "ra0")]
   |>.addShare "a1" #[.leaf (.Random "ra1")]
@@ -717,20 +672,7 @@ def circuitG : GlobalDAG := ({} : GlobalDAG)
   |>.addWireXor "s2m" #[.wire "u2", .wire "c20"]
   |>.addWireXor "s2"  #[.wire "s2m", .wire "c21"]
 
-#eval do
-  let (g, _, res1, stats1) := checkDProbing circuitG 1
-  let (_, _, res2, stats2) := checkDProbing circuitG 2
-  let (_, _, res3, stats3) := checkDProbing circuitG 3
-  IO.println "=== G: 3-share DOM-AND ==="
-  IO.println (Circuit.ppCircuit g.circuit)
-  IO.println (ppResult res1 1)
-  IO.println stats1.pp
-  IO.println (ppResult res2 2)
-  IO.println stats2.pp
-  IO.println (ppResult res3 3)
-  IO.println stats3.pp
-
-/-! ### Example 8 — DOM-AND with 7 shares -/
+/-! ## Example 8 — DOM-AND with 7 shares -/
 def dom7Indices : Array Nat := #[0, 1, 2, 3, 4, 5, 6]
 def dom7RandomIndices : Array Nat := #[0, 1, 2, 3, 4, 5]
 def dom7Pairs : Array (Nat × Nat) :=
@@ -788,7 +730,7 @@ def addDom7Outputs (g : GlobalDAG) : GlobalDAG :=
     addWireXorChain g s!"s{i}" (dom7OutputTerms i))
     g
 
-def circuitH : GlobalDAG :=
+def sevenDomAND : GlobalDAG :=
   let g : GlobalDAG := {}
   let g := addDom7InputShares g
   let g := addDom7Diagonals g
@@ -796,34 +738,13 @@ def circuitH : GlobalDAG :=
   let g := addDom7MaskedCrossTerms g
   addDom7Outputs g
 
-/- it takes too long so we keep it commented out
-#eval do
-  IO.println "=== H: 7-share DOM-AND ==="
-  let t0 := (← IO.monoMsNow)
-  let (g, _, res, stats) := checkDProbing circuitH 4
-  let t1 := (← IO.monoMsNow)
-  IO.println s!"[{t1 - t0} ms]"
-  IO.println (Circuit.ppCircuit g.circuit)
-  IO.println (ppResult res 3)
-  IO.println stats.pp
-
-  output:
-  === H: 7-share DOM-AND ===
-  [1792660 ms]
-  SECURE at order 3: all probe sets certified.
-    total discharges       : 3223
-    successful main probes : 1599
-    free wires (sum)       : 921
-    free wires (avg/main)  : 0.575985
--/
-
 /-! ## Example 9 — 4-share masking of the quadratic function F(x,y,z) = x + (y * z)
 
     This is a 4-share Threshold Implementation of a quadratic Boolean
     function in three input variables.
 
     Construction:
-      Inputs:  three secrets x, y, z, each in 4 shares.
+      Inputs: three secrets x, y, z, each in 4 shares.
 
       Output shares:
         F_1 = x_2 + ∑_{i,j ∈ {2,3,4}} y_i * z_j
@@ -833,7 +754,7 @@ def circuitH : GlobalDAG :=
         F_4 = x_1
 
       Correctness: ∑_i F_i = x + y * z -/
-def circuitI : GlobalDAG :=
+def circuitE : GlobalDAG :=
   let g : GlobalDAG := ({} : GlobalDAG)
   -- share production for x
   |>.addShare "x1" #[WireInput.leaf (VarType.Random "r_x0")]
@@ -889,27 +810,7 @@ def circuitI : GlobalDAG :=
                        WireInput.wire "y1z2", WireInput.wire "y2z1"]
   addWireXorChain g "F4" #[WireInput.wire "x1"]
 
-#eval do
-  IO.println "=== 4-share masked version of x + yz ==="
-  let t0 := (← IO.monoMsNow)
-  let (_, _, res1, stats1) := checkDProbing circuitI 1
-  let t1 := (← IO.monoMsNow)
-  IO.println s!"{ppResult res1 1}  [{t1 - t0} ms]"
-  IO.println stats1.pp
-  let (_, _, res2, stats2) := checkDProbing circuitI 2
-  let t2 := (← IO.monoMsNow)
-  IO.println s!"{ppResult res2 2}  [{t2 - t1} ms]"
-  IO.println stats2.pp
-  let (_, _, res3, stats3) := checkDProbing circuitI 3
-  let t3 := (← IO.monoMsNow)
-  IO.println s!"{ppResult res3 3}  [{t3 - t2} ms]"
-  IO.println stats3.pp
-  let (_, _, res4, stats4) := checkDProbing circuitI 4
-  let t4 := (← IO.monoMsNow)
-  IO.println s!"{ppResult res4 4}  [{t4 - t3} ms]"
-  IO.println stats4.pp
-
-/-! ## Closure ablation — is the closure-based prune worth its cost?
+/-! ## Stats
 
     Runs each instance twice: once with the topological-greedy closure prune
     (`useClosure := true`) and once closure-free (`useClosure := false`, where the
@@ -923,52 +824,32 @@ def ppAblation (name : String) (g : GlobalDAG) (order : Nat) : IO Unit := do
   let (_, _, resN, sN) := checkDProbing g order false
   let t2 ← IO.monoMsNow
   let v := fun (r : CheckResult) => if r.isSecure then "secure" else "INSECURE"
-  IO.println s!"{name} @ order {order}:  verdict {v resW} (agree={resW.isSecure == resN.isSecure})"
-  IO.println s!"    with closure   : {t1 - t0} ms  | discharges {sW.totalDischarges}  certs {sW.successMain}  free/main {sW.avgFreeWires}"
-  IO.println s!"    without closure: {t2 - t1} ms  | discharges {sN.totalDischarges}  certs {sN.successMain}"
+  IO.println s!"{name} @ order {order}:  verdict (with closure) {v resW} ~ (agrees with no closure={resW.isSecure == resN.isSecure})"
+  IO.println s!"    with closure   : {t1 - t0} ms  |\n{sW.pp}\n"
+  IO.println s!"    without closure: {t2 - t1} ms  |\n{sN.pp}\n"
+
+
+#eval do
+  IO.println "=== Results ==="
+  ppAblation "Example 1" circuitA 1
+  ppAblation "Example 2" circuitB 1
+  ppAblation "Example 2" circuitB 2
+  ppAblation "2-share DOM-AND" twoDomAND 1
+  ppAblation "2-share DOM-AND" twoDomAND 2
+  ppAblation "Example 4" circuitC 1
+  ppAblation "Example 4" circuitC 2
+  ppAblation "Example 5" circuitD 1
+  ppAblation "Q⁴₁₂" q_12 1
+  ppAblation "3-share DOM-AND" threeDomAND 2
+  -- ppAblation "7-share DOM-AND" sevenDomAND 5
+  ppAblation "Example x + yz" circuitE 2
+  ppAblation "Example x + yz" circuitE 3
 
 /-
-#eval do
-  IO.println "=== Closure ablation (WITH vs WITHOUT closure pruning) ==="
-  ppAblation "3-share DOM-AND" circuitG 1
-  ppAblation "3-share DOM-AND" circuitG 2
-  ppAblation "3-share DOM-AND" circuitG 3
-  ppAblation "Q412" circuitF 1
-  ppAblation "Q412" circuitF 2
-  ppAblation "Ex9 x+yz" circuitI 1
-  ppAblation "Ex9 x+yz" circuitI 2
-  ppAblation "Ex9 x+yz" circuitI 3
-  ppAblation "7-share DOM-AND" circuitH 5
-
   output:
-  === Closure ablation (WITH vs WITHOUT closure pruning) ===
-3-share DOM-AND @ order 1:  verdict secure (agree=true)
-    with closure   : 431 ms  | discharges 35  certs 17  free/main 0.000000
-    without closure: 388 ms  | discharges 35  certs 17
-3-share DOM-AND @ order 2:  verdict secure (agree=true)
-    with closure   : 325 ms  | discharges 54  certs 26  free/main 0.230769
-    without closure: 422 ms  | discharges 54  certs 26
-3-share DOM-AND @ order 3:  verdict INSECURE (agree=true)
-    with closure   : 71 ms  | discharges 8  certs 3  free/main 2.000000
-    without closure: 34 ms  | discharges 2  certs 0
-Q412 @ order 1:  verdict secure (agree=true)
-    with closure   : 312 ms  | discharges 47  certs 23  free/main 0.434783
-    without closure: 382 ms  | discharges 59  certs 29
-Q412 @ order 2:  verdict INSECURE (agree=true)
-    with closure   : 93 ms  | discharges 10  certs 4  free/main 1.500000
-    without closure: 25 ms  | discharges 2  certs 0
-Ex9 x+yz @ order 1:  verdict secure (agree=true)
-    with closure   : 1466 ms  | discharges 55  certs 27  free/main 0.000000
-    without closure: 1470 ms  | discharges 55  certs 27
-Ex9 x+yz @ order 2:  verdict secure (agree=true)
-    with closure   : 1326 ms  | discharges 81  certs 40  free/main 0.250000
-    without closure: 1425 ms  | discharges 84  certs 41
-Ex9 x+yz @ order 3:  verdict INSECURE (agree=false)
-    with closure   : 1409 ms  | discharges 139  certs 66  free/main 0.560606
-    without closure: 2374 ms  | discharges 195  certs 96
-7-share DOM-AND @ order 5:  verdict secure (agree=true)
-    with closure   : 1072583 ms  | discharges 14256  certs 7113  free/main 0.532265
-    without closure: 842942 ms  | discharges 9298  certs 4633
+  7-share DOM-AND @ order 5:  verdict secure (agree=true)
+      with closure   : 1072583 ms  | discharges 14256  certs 7113  free/main 0.532265
+      without closure: 842942 ms  | discharges 9298  certs 4633
 -/
 
 end verif
