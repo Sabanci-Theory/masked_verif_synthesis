@@ -453,33 +453,33 @@ partial def checkAllMulti
           let stats := stats.recordClosure closure chosen (ppWorklist wl)
           let closureSet : HashMap String Unit :=
             closure.foldl (fun m w => m.insert w ()) {}
-          let unsafeWl : ProbeWorklist := wl.map (fun f =>
-            { count := f.count
-              wires := f.wires.filter (fun w => !closureSet.contains w) })
-          let (g, stats, r1) := checkAllMulti g topo fw stats unsafeWl useClosure
-          if !r1.isSecure then (g, stats, r1)
-          else
-            let rec splitFactor (g : GlobalDAG) (stats : Stats) (jIdx : Nat)
-                : GlobalDAG × Stats × CheckResult :=
-              if jIdx >= wl.size then (g, stats, .Secure)
-              else
-                let f := wl[jIdx]!
-                let safeJ   := f.wires.filter (fun w => closureSet.contains w)
-                let unsafeJ := f.wires.filter (fun w => !closureSet.contains w)
-                let rec doI (g : GlobalDAG) (stats : Stats) (i : Nat)
-                    : GlobalDAG × Stats × CheckResult :=
-                  if i == 0 then splitFactor g stats (jIdx + 1)
-                  else
-                    let newWl : ProbeWorklist :=
-                      (wl.extract 0 jIdx)
-                        ++ #[{ count := i,           wires := safeJ },
-                             { count := f.count - i, wires := unsafeJ }]
-                        ++ (wl.extract (jIdx + 1) wl.size)
-                    let (g, stats, ri) := checkAllMulti g topo fw stats newWl useClosure
-                    if !ri.isSecure then (g, stats, ri)
-                    else doI g stats (i - 1)
-                doI g stats (f.count - 1)
-            splitFactor g stats 0
+          -- Vandermonde decomposition.  Split each factor's wires into its
+          -- closure-safe and closure-unsafe parts, then enumerate the *product*
+          -- over factors of every count distribution (`i` from safe, `count - i`
+          -- from unsafe, for `i = 0 .. count`) — every cell except the all-safe
+          -- one, whose tuples lie inside the already-certified closure.
+          let rec splitCells (g : GlobalDAG) (stats : Stats)
+              (acc : ProbeWorklist) (idx : Nat) (allSafe : Bool)
+              : GlobalDAG × Stats × CheckResult :=
+            if idx >= wl.size then
+              if allSafe then (g, stats, .Secure)        -- ⊆ closure, already certified
+              else checkAllMulti g topo fw stats acc useClosure
+            else
+              let f       := wl[idx]!
+              let safeJ   := f.wires.filter (fun w => closureSet.contains w)
+              let unsafeJ := f.wires.filter (fun w => !closureSet.contains w)
+              let rec doI (g : GlobalDAG) (stats : Stats) (i : Nat)
+                  : GlobalDAG × Stats × CheckResult :=
+                let cell : ProbeWorklist :=
+                  (if i == 0           then #[] else #[{ count := i,           wires := safeJ }]) ++
+                  (if f.count - i == 0 then #[] else #[{ count := f.count - i, wires := unsafeJ }])
+                let (g, stats, r) :=
+                  splitCells g stats (acc ++ cell) (idx + 1) (allSafe && i == f.count)
+                if !r.isSecure then (g, stats, r)
+                else if i == 0 then (g, stats, .Secure)
+                else doI g stats (i - 1)
+              doI g stats f.count
+          splitCells g stats #[] 0 true
 
 end
 
