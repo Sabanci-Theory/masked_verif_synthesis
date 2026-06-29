@@ -6,66 +6,22 @@ Discuss:
         - X -> h1, h2, h3
         - MD5(X ++ h1 ++ h2 ++ h3) -- use a fast hashing algorithm
 
-    * Tracking reference counts (specifically references from `xorNode`s) and storing the IDs of random variables somewhere
-        - turns the query of standalone XOR'ed random variables into O(|random variables|) time
-    + this is now implemented
-    
-    * Rewrite order heuristic in maskVerif is to rewrite the random variable with the least multiplicative depth. This is a
-      reasonable heuristic, but I have another: rewrite the random whose XOR parent has the most children.
-
-    * Realized negatives:
-        - after factoring, nodes that were moved out of place become semantically redundant (they are now unreachable from roots),
-          but references pointing at them are kept in HashMaps, burdening the memory. if reference counting is implemented, this
-          can be worked around but that would increase the complexity of factoring and many other procedures (even reference
-          rounting is not exactly a solution)
-
-        - the global DAG grows with each probe, and there is not just a memory question but also a computation question. it is
-          usually the case that some of the nodes are factored over and over again. if we could memoize the resulting factoring
-          for some of the nodes we can evade redundant computations.
-
-        - after the DFS worker does its job we do not necessarily require to run `gdag.dag.randoms.fiter`. it is not super cheap
-          and we could have filled in the `todo` while the DFS worker is running.
-
-        - in the DFSState we do not really need to have two hash maps for the parents, we can just have `HashMap NodeId (Nat x Nat)`
-
-        - a similar redundant computation to factoring happens with the DFS worker as well, we can cache parent information for
-          nodes. probably.
-
-        - partial functions are not nice
-
-        = flattening, in practice, loses information about cables. is this problematic?
-        + yes it is, but we can work around it
-
-    * The proposed degree 2 completeness is also not correct.
+    * we do not have degree 2 completeness.
         - here is a counterexample: f(s, r_1, r_2, r_3, r_4) = s * r_1 + r_1 * r_2 + r_3 * r_4
 
 = is there a difference between factoring from top-to-bottom and bottom-to-top?
 + yes there is, but for our purposes it is not clear if one has an edge over the other.
 
 = some more documentation is needed
-+ source code is thoroughly documented
 
 = rewrites first and then factoring, probably
 
 Note to self:
           rewriting is confluent
           completeness attained only in linear/affine cases
-            
-          probe enumeration
-          creating the full pipeline for the tool
 
 Gemini's critique for the code:
 ===============================
-This is a highly structured, well-thought-out implementation. Using a hash-consed DAG to intrinsically handle $\mathbb{F}_2$ cancellations
-(like $e \oplus e = 0$) and structural hashing is the exact right approach for verification. 
-
-However, since you mentioned the worst-case scenario—evaluating probes exponentially many times relative to the number of wires
-(the $2^w$ problem)—the performance landscape changes drastically. When an operation runs millions of times, minor overheads compound into
-complete blockages. 
-
-Here is a candid review of the algorithmic and memory bottlenecks currently in your architecture, ranked by severity.
-
-
 ### 1. The "Per-Probe" Factoring Trap (Critical Time Leak)
 
 Currently, `initProbe` calls `gdag.dag.factor origRoots`. This means you are dynamically running the factoring algorithm *inside* the
@@ -73,10 +29,6 @@ exponential probe loop.
 
 **The Problem:** Factoring involves deep DAG traversals, frequency counting, and interning new nodes. Doing this repeatedly for the exact
 same circuit sub-graphs across different probe combinations is a massive duplication of work. 
-
-**The Fix:** Circuit factoring should be a **static, one-time preprocessing step**. You should factor the `GlobalDAG` *before* you generate
-the power set of probes, effectively locking the DAG into a canonical, optimized shape. The probes should then just evaluate on this
-static, factored DAG.
 
 
 ### 2. Dense Arrays vs. HashMaps (Critical Time & Memory Leak)
@@ -90,19 +42,6 @@ exponential loop is incredibly slow and fragments memory.
 **The Fix:** Replace `HashMap NodeId X` in your probe state with dense `Array X`, where the index *is* the `NodeId`. Array lookups/updates
 are $\mathcal{O}(1)$ pointer offsets. For a graph of 10,000 nodes, pre-allocating an `Array Nat` of size 10,000 and cloning it per probe is
 exponentially faster than rebuilding HashMaps.
-
-
-### 3. Global Memory Bloat from Witnesses (Critical Memory Leak)
-In our recent addition, `buildWitnesses` mutates the shared `GlobalDAG` to intern the primed variables ($a'$, $r'$) and the witness coupling
-expressions.
-
-**The Problem:** Witnesses are specific to a single probe's rewrite history. If you have $2^{10}$ probes, and each generates 5 unique witness
-nodes, you are permanently injecting 5,000 dead nodes into the `GlobalDAG`. As the exponential loop progresses, hash-consing slows down because
-the interning map becomes massive, filled with useless expressions from previous probes.
-
-**The Fix:** You need a "Local DAG" or "Ephemeral DAG" layer. Witnesses should be interned into a localized state that is thrown away after the
-probe is checked. Alternatively, run the exponential check loop to find the security boolean *first*, and only build the witness DAG artifacts
-for the probes you specifically want to output or formally log.
 
 
 ### 4. $\mathcal{O}(n^2)$ Node Constructors (Time Leak)
@@ -126,8 +65,5 @@ enormous amount of garbage collection pressure.
 
 **The Fix:** Instead of reallocating arrays, consider a "lazy deletion" approach. Just keep a `HashSet NodeId` (or a flat boolean `Array Bool`
 indexed by `NodeId`) of `deletedEdges` or `rewrittenNodes`. When iterating over parents later, just skip any IDs marked as deleted.
-
-
-To handle exponential worst-case scenarios, the architecture needs to shift from "allocating new structures per-probe" to "mutating and resetting
-pre-allocated flat arrays." 
+ 
 ===============================
