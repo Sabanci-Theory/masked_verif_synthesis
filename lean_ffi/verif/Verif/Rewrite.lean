@@ -263,22 +263,18 @@ def insertTodoByDepth (ps : ProbeState) (r : NodeId) : ProbeState :=
     let pos := (ps.todo.findIdx? (fun rid => (ps.mulDepth[rid]?).getD 0 > d)).getD ps.todo.size
     { ps with todo := ps.todo.insertIdx! pos r }
 
-/-- Probe initialisation by root NodeIds.
-
-    Factoring is idempotent on already-factored subgraphs (every `mkXor`/`mkAnd`
-    hits an existing intern entry), so the cost is bounded; the factor chosen for
-    a XOR node can in principle change when the presented set of probe roots
-    restricts the view of common factors, which is why it is recomputed here. -/
+/-- Probe initialisation by root NodeIds: run the DFS over the given roots and
+    collect the simple-rule worklist `todo` (randoms with a unique additive
+    occurrence).  Does **not** factor — factoring is applied lazily by the caller
+    (`checkProbeRoots`), only after the simple rule has failed on the current form. -/
 def initProbeByIds (g : GlobalDAG) (rootIds : Array NodeId) : GlobalDAG × ProbeState :=
-  let (dag, factoredRoots) := g.dag.factor rootIds
-  let g := { g with dag := dag }
-  let s : DFSState := factoredRoots.foldl (dfsRoot g.dag) {}
-  let rootSet : HashMap NodeId Unit := factoredRoots.foldl (fun m r => m.insert r ()) {}
+  let s : DFSState := rootIds.foldl (dfsRoot g.dag) {}
+  let rootSet : HashMap NodeId Unit := rootIds.foldl (fun m r => m.insert r ()) {}
   let todoUnsorted := g.dag.randoms.filter (fun rId =>
     s.totalParCount[rId]? == some 1 && s.xorParCount[rId]? == some 1 && !rootSet.contains rId)
   let todo := todoUnsorted.qsort (fun a b => (s.mulDepth[a]?).getD 0 < (s.mulDepth[b]?).getD 0)
   (g, {
-    roots            := factoredRoots
+    roots            := rootIds
     xorParCount      := s.xorParCount
     totalParCount    := s.totalParCount
     mulDepth         := s.mulDepth
@@ -462,10 +458,10 @@ def contextOf (g : GlobalDAG) (x1 r : NodeId) : GlobalDAG × NodeId :=
 /-- Simple-rule candidate: a random occurring exactly once, additively, not a
     root.  Among candidates prefer the least multiplicative depth (the additive
     layer first), matching the fast path and maskVerif's increasing-depth order. -/
-def findSimpleRandom (dag : DAG) (s : DFSState) (rootSet : HashMap NodeId Unit)
+def findSimpleRandom (randoms : Array NodeId) (s : DFSState) (rootSet : HashMap NodeId Unit)
     : Option (NodeId × NodeId) := Id.run do
   let mut best : Option (NodeId × NodeId × Nat) := none
-  for r in dag.randoms do
+  for r in randoms do
     if rootSet.contains r then continue
     if s.totalParCount[r]? == some 1 && s.xorParCount[r]? == some 1 then
       let x1 := ((s.parents[r]?).getD #[])[0]!
@@ -478,21 +474,31 @@ def findSimpleRandom (dag : DAG) (s : DFSState) (rootSet : HashMap NodeId Unit)
 /-- General-rule candidate: a not-yet-used random occurring ≥ 2× that has an
     additive parent `x1` whose other children do not mention it.  Prefer the
     greatest multiplicative depth. -/
-def findGeneralRandom (dag : DAG) (s : DFSState) (rootSet used : HashMap NodeId Unit)
+def findGeneralRandom (dag : DAG) (randoms : Array NodeId) (s : DFSState)
+    (rootSet used : HashMap NodeId Unit)
     : Option (NodeId × NodeId) := Id.run do
   let mut best : Option (NodeId × NodeId × Nat) := none
-  for r in dag.randoms do
+  for r in randoms do
     if used.contains r then continue
     let occ := (s.totalParCount[r]?).getD 0 + (if rootSet.contains r then 1 else 0)
     if occ < 2 then continue
     if (s.xorParCount[r]?).getD 0 == 0 then continue
+    -- `reachesNodeAux`'s memo is keyed by node for a *fixed* target `r`, so we can
+    -- share one `vis` across all of `r`'s additive parents and their children
+    -- instead of re-walking the sub-DAG from scratch on every check.
+    let mut vis : HashMap NodeId Bool := {}
     let mut chosen : Option NodeId := none
     for x1 in (s.parents[r]?).getD #[] do
       if chosen.isSome then continue
       match dag.kind? x1 with
       | some (NodeKind.xorNode ch) =>
-        if (ch.filter (· != r)).all (fun c => !nodeReaches dag r c) then
-          chosen := some x1
+        let mut clear := true
+        for c in ch do
+          if clear && c != r then
+            let (vis', reaches) := reachesNodeAux dag r vis c
+            vis := vis'
+            if reaches then clear := false
+        if clear then chosen := some x1
       | _ => pure ()
     match chosen with
     | none    => pure ()
@@ -504,31 +510,69 @@ def findGeneralRandom (dag : DAG) (s : DFSState) (rootSet used : HashMap NodeId 
   return best.map (fun (r, x1, _) => (r, x1))
 
 /-- Full optimistic-sampling loop: simple rule first, then the general rule;
-    succeeds when no secret remains.  Re-factors each round to expose factors. -/
+    succeeds when no secret remains.  Factoring is **lazy**: each round the finds
+    run on the current (canonical, possibly unfactored) form; only when *both*
+    finds stall do we factor and retry.  `factored` tracks whether the current
+    form has already been factored since the last substitution, so we declare
+    failure only after the finds stall on the *factored* form.  Each substitution
+    resets `factored := false` (the new form is unfactored). -/
 partial def rewriteComplete (g : GlobalDAG) (tuple : Array NodeId)
-    (used : HashMap NodeId Unit) (fuel : Nat) : GlobalDAG × Bool :=
-  let (dag, tuple) := g.dag.factor tuple
-  let g := { g with dag }
-  if !tupleHasSecret g.dag tuple then (g, true)
+    (used : HashMap NodeId Unit) (fuel : Nat) (factored : Bool) : GlobalDAG × Bool :=
+  -- One DFS pass per round serves two purposes: it answers "is the tuple
+  -- secret-free?" (no separate `tupleHasSecret` traversal — a secret survives iff
+  -- it is a root or has a parent in the explored sub-DAG) and it feeds the finds.
+  let s : DFSState := tuple.foldl (dfsRoot g.dag) {}
+  let secretFree :=
+    tuple.all (fun rid => !g.dag.isSecretNode rid) &&
+    g.dag.secrets.all (fun sid => (s.totalParCount[sid]?).getD 0 == 0)
+  if secretFree then (g, true)
   else if fuel == 0 then (g, false)
   else
-    let s : DFSState := tuple.foldl (dfsRoot g.dag) {}
     let rootSet : HashMap NodeId Unit := tuple.foldl (fun m r => m.insert r ()) {}
-    match findSimpleRandom g.dag s rootSet with
+    -- Restrict the finds to the randoms actually present in this tuple rather than
+    -- scanning every random in the circuit each round.
+    let tupleRandoms := g.dag.randoms.filter (fun r =>
+      (s.totalParCount[r]?).getD 0 > 0 || rootSet.contains r)
+    match findSimpleRandom tupleRandoms s rootSet with
     | some (r, x1) =>
       let (g, e)      := contextOf g x1 r
       let (g, tuple') := substTupleByE g tuple r e
-      rewriteComplete g tuple' used (fuel - 1)
+      rewriteComplete g tuple' used (fuel - 1) false
     | none =>
-      match findGeneralRandom g.dag s rootSet used with
+      match findGeneralRandom g.dag tupleRandoms s rootSet used with
       | some (r, x1) =>
         let (g, e)      := contextOf g x1 r
         let (g, tuple') := substTupleByE g tuple r e
-        rewriteComplete g tuple' (used.insert r ()) (fuel - 1)
-      | none => (g, false)
+        rewriteComplete g tuple' (used.insert r ()) (fuel - 1) false
+      | none =>
+        -- Both finds stalled.  If the form is already factored, give up;
+        -- otherwise factor (to expose product-buried randoms) and retry.
+        if factored then (g, false)
+        else
+          let (dag, tuple') := g.dag.factor tuple
+          rewriteComplete { g with dag } tuple' used fuel true
 
 /-- Entry point for the complete checker on a tuple of observation roots. -/
 def checkProbeComplete (g : GlobalDAG) (tuple : Array NodeId) : GlobalDAG × Bool :=
-  rewriteComplete g tuple {} ((g.dag.randoms.size + 2) * 256)
+  rewriteComplete g tuple {} ((g.dag.randoms.size + 2) * 256) false
+
+/-- Probe check with lazy factoring.
+    (1) reference-counted simple rule on the **unfactored** roots;
+    (2) on failure, factor and retry the simple rule;
+    (3) on failure, the complete general loop, which itself factors lazily
+        (only when both find-rules stall — see `rewriteComplete`).
+    Factoring widens the certifiable class but is costly, so it is paid for only
+    when the cheaper simple rule cannot discharge the probe. -/
+def checkProbeRoots (g : GlobalDAG) (rootIds : Array NodeId) : GlobalDAG × Bool :=
+  let (g, ps)      := initProbeByIds g rootIds
+  let (g, ps, sec) := rewriteLoop g ps
+  if sec then (g, true)
+  else
+    let (dag, froots) := g.dag.factor ps.roots
+    let g := { g with dag }
+    let (g, ps2)     := initProbeByIds g froots
+    let (g, _, sec2) := rewriteLoop g ps2
+    if sec2 then (g, true)
+    else checkProbeComplete g rootIds
 
 end verif

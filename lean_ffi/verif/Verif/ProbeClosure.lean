@@ -279,12 +279,8 @@ def checkProbeByNames (g : GlobalDAG) (fw : HashMap String NodeId)
   | some sec => (g, (default : ProbeState), sec, stats.recordHit kind)
   | none     =>
     let ids := wireNamesToIds fw names
-    let (g, ps) := initProbeByIds g ids
-    let (g, ps, sec) := rewriteLoop g ps
-    if sec then (g, ps, true, stats.recordMiss key true)
-    else
-      let (g, sec2) := checkProbeComplete g ps.roots
-      (g, ps, sec2, stats.recordMiss key sec2)
+    let (g, sec) := checkProbeRoots g ids
+    (g, (default : ProbeState), sec, stats.recordMiss key sec)
 
 -- ============================================================
 -- Topological-greedy probe construction
