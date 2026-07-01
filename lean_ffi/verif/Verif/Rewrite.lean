@@ -319,7 +319,11 @@ partial def decrementParent (dag : DAG) (ps : ProbeState) (nodeId : NodeId) (was
       if ps.isRandom dag nodeId && tpc' == 1 && xpc' == 1 then insertTodoByDepth ps nodeId
       else ps
 
-def applyRewrite (g : GlobalDAG) (ps : ProbeState) (r : NodeId) : GlobalDAG × ProbeState :=
+/-- Fire the simple rule on random `r`: splice its unique additive parent `x`
+    away and drop `r`.  Returns `x` too — the coupling relabel for this step is
+    `r ← x` (`x = e+r`), recorded by `rewriteLoop`. -/
+def applyRewrite (g : GlobalDAG) (ps : ProbeState) (r : NodeId)
+    : GlobalDAG × ProbeState × NodeId :=
   let x := ((ps.parents[r]?).getD #[])[0]!
   let xCh := match g.dag.kind? x with
     | some (NodeKind.xorNode ch) => ch
@@ -337,17 +341,19 @@ def applyRewrite (g : GlobalDAG) (ps : ProbeState) (r : NodeId) : GlobalDAG × P
       let ps := { ps with parents := ps.parents.insert ci newPars }
       decrementParent g.dag ps ci true)
     ps
-  (g, ps)
+  (g, ps, x)
 
-partial def rewriteLoop (g : GlobalDAG) (ps : ProbeState) : GlobalDAG × ProbeState × Bool :=
-  if isSecure g ps then (g, ps, true)
+partial def rewriteLoop (g : GlobalDAG) (ps : ProbeState)
+    (coupling : Array (NodeId × NodeId))
+    : GlobalDAG × ProbeState × Bool × Array (NodeId × NodeId) :=
+  if isSecure g ps then (g, ps, true, coupling)
   else
     match ps.todo[0]? with
-    | none   => (g, ps, false)
+    | none   => (g, ps, false, coupling)
     | some r =>
       let ps := { ps with todo := ps.todo.eraseIdx! 0 }
-      let (g', ps') := applyRewrite g ps r
-      rewriteLoop g' ps'
+      let (g', ps', x) := applyRewrite g ps r
+      rewriteLoop g' ps' (coupling.push (r, x))
 
 -- ============================================================
 -- Complete fallback: full optimistic sampling (simple + general rule)
@@ -437,15 +443,17 @@ partial def substNode (g : GlobalDAG) (r t : NodeId) (memo : HashMap NodeId Node
       ({ g with dag }, memo.insert n m, m)
     | _ => (g, memo.insert n n, n)
 
-/-- Apply `r ← e+r` to every root (`e` given as a node). -/
+/-- Apply `r ← e+r` to every root (`e` given as a node).  Also returns the
+    substitution node `t = e+r`, so the caller can record the coupling step
+    `(r, t)` for replay on wires outside the tuple. -/
 def substTupleByE (g : GlobalDAG) (tuple : Array NodeId) (r e : NodeId)
-    : GlobalDAG × Array NodeId :=
+    : GlobalDAG × Array NodeId × NodeId :=
   let (dag, t) := g.dag.mkXor #[e, r]
   let g := { g with dag }
   let (g, _, roots) := tuple.foldl (fun (g, memo, acc) root =>
     let (g, memo, root') := substNode g r t memo root
     (g, memo, acc.push root')) (g, ({} : HashMap NodeId NodeId), #[])
-  (g, roots)
+  (g, roots, t)
 
 /-- `e` for an additive occurrence `x1 = e + r`: `x1`'s other children. -/
 def contextOf (g : GlobalDAG) (x1 r : NodeId) : GlobalDAG × NodeId :=
@@ -517,7 +525,8 @@ def findGeneralRandom (dag : DAG) (randoms : Array NodeId) (s : DFSState)
     failure only after the finds stall on the *factored* form.  Each substitution
     resets `factored := false` (the new form is unfactored). -/
 partial def rewriteComplete (g : GlobalDAG) (tuple : Array NodeId)
-    (used : HashMap NodeId Unit) (fuel : Nat) (factored : Bool) : GlobalDAG × Bool :=
+    (used : HashMap NodeId Unit) (fuel : Nat) (factored : Bool)
+    (coupling : Array (NodeId × NodeId)) : GlobalDAG × Bool × Array (NodeId × NodeId) :=
   -- One DFS pass per round serves two purposes: it answers "is the tuple
   -- secret-free?" (no separate `tupleHasSecret` traversal — a secret survives iff
   -- it is a root or has a parent in the explored sub-DAG) and it feeds the finds.
@@ -525,8 +534,8 @@ partial def rewriteComplete (g : GlobalDAG) (tuple : Array NodeId)
   let secretFree :=
     tuple.all (fun rid => !g.dag.isSecretNode rid) &&
     g.dag.secrets.all (fun sid => (s.totalParCount[sid]?).getD 0 == 0)
-  if secretFree then (g, true)
-  else if fuel == 0 then (g, false)
+  if secretFree then (g, true, coupling)
+  else if fuel == 0 then (g, false, coupling)
   else
     let rootSet : HashMap NodeId Unit := tuple.foldl (fun m r => m.insert r ()) {}
     -- Restrict the finds to the randoms actually present in this tuple rather than
@@ -535,44 +544,108 @@ partial def rewriteComplete (g : GlobalDAG) (tuple : Array NodeId)
       (s.totalParCount[r]?).getD 0 > 0 || rootSet.contains r)
     match findSimpleRandom tupleRandoms s rootSet with
     | some (r, x1) =>
-      let (g, e)      := contextOf g x1 r
-      let (g, tuple') := substTupleByE g tuple r e
-      rewriteComplete g tuple' used (fuel - 1) false
+      let (g, e)         := contextOf g x1 r
+      let (g, tuple', t) := substTupleByE g tuple r e
+      rewriteComplete g tuple' used (fuel - 1) false (coupling.push (r, t))
     | none =>
       match findGeneralRandom g.dag tupleRandoms s rootSet used with
       | some (r, x1) =>
-        let (g, e)      := contextOf g x1 r
-        let (g, tuple') := substTupleByE g tuple r e
-        rewriteComplete g tuple' (used.insert r ()) (fuel - 1) false
+        let (g, e)         := contextOf g x1 r
+        let (g, tuple', t) := substTupleByE g tuple r e
+        rewriteComplete g tuple' (used.insert r ()) (fuel - 1) false (coupling.push (r, t))
       | none =>
         -- Both finds stalled.  If the form is already factored, give up;
         -- otherwise factor (to expose product-buried randoms) and retry.
-        if factored then (g, false)
+        if factored then (g, false, coupling)
         else
           let (dag, tuple') := g.dag.factor tuple
-          rewriteComplete { g with dag } tuple' used fuel true
+          rewriteComplete { g with dag } tuple' used fuel true coupling
 
-/-- Entry point for the complete checker on a tuple of observation roots. -/
-def checkProbeComplete (g : GlobalDAG) (tuple : Array NodeId) : GlobalDAG × Bool :=
-  rewriteComplete g tuple {} ((g.dag.randoms.size + 2) * 256) false
+/-- Entry point for the complete checker on a tuple of observation roots.
+    Returns the coupling `T` (ordered `(r, t)` substitutions) used to certify it. -/
+def checkProbeCompleteT (g : GlobalDAG) (tuple : Array NodeId)
+    : GlobalDAG × Bool × Array (NodeId × NodeId) :=
+  rewriteComplete g tuple {} ((g.dag.randoms.size + 2) * 256) false #[]
 
-/-- Probe check with lazy factoring.
+/-- Probe check with lazy factoring, returning the coupling `T` that certifies it.
     (1) reference-counted simple rule on the **unfactored** roots;
     (2) on failure, factor and retry the simple rule;
     (3) on failure, the complete general loop, which itself factors lazily
         (only when both find-rules stall — see `rewriteComplete`).
     Factoring widens the certifiable class but is costly, so it is paid for only
-    when the cheaper simple rule cannot discharge the probe. -/
-def checkProbeRoots (g : GlobalDAG) (rootIds : Array NodeId) : GlobalDAG × Bool :=
-  let (g, ps)      := initProbeByIds g rootIds
-  let (g, ps, sec) := rewriteLoop g ps
-  if sec then (g, true)
+    when the cheaper simple rule cannot discharge the probe.
+
+    `T` is the ordered list of `(r, t)` optimistic-sampling relabels (`r ← t = e+r`)
+    applied by the successful tier; factoring steps contribute nothing (a reshape,
+    not a relabel).  In the simple/reference-counted tier the relabel of an
+    eliminated random `r` is `r ← x`, its unique additive parent (`x = e+r`).
+    Meaningful only when the returned verdict is `true`. -/
+def checkProbeRootsT (g : GlobalDAG) (rootIds : Array NodeId)
+    : GlobalDAG × Bool × Array (NodeId × NodeId) :=
+  let (g, ps)            := initProbeByIds g rootIds
+  let (g, ps, sec, cpl)  := rewriteLoop g ps #[]
+  if sec then (g, true, cpl)
   else
     let (dag, froots) := g.dag.factor ps.roots
     let g := { g with dag }
-    let (g, ps2)     := initProbeByIds g froots
-    let (g, _, sec2) := rewriteLoop g ps2
-    if sec2 then (g, true)
-    else checkProbeComplete g rootIds
+    let (g, ps2)           := initProbeByIds g froots
+    let (g, _, sec2, cpl2) := rewriteLoop g ps2 #[]
+    if sec2 then (g, true, cpl2)
+    else checkProbeCompleteT g rootIds
+
+/-- Verdict-only wrapper over `checkProbeRootsT`, dropping the coupling.  Used by
+    discharges that only need the SECURE/INSECURE bit (e.g. the OptSampling
+    large-set `union` test), not the extension. -/
+def checkProbeRoots (g : GlobalDAG) (rootIds : Array NodeId) : GlobalDAG × Bool :=
+  let (g, sec, _) := checkProbeRootsT g rootIds
+  (g, sec)
+
+/-- **Coupling-driven probe-set extension.**  Given the coupling `T` (the ordered
+    `(r, t)` substitutions that certified a chosen probe `O`) and the candidate
+    observations `(name, node)`, return the names whose `w∘T` is secret-free — the
+    certified-safe set `ŷ`.
+
+    Soundness.  `T` is a composition of optimistic-sampling relabels `r ← e+r`,
+    each a measure-preserving bijection on the random tape, so `T` is one too.  If
+    `w∘T` mentions no secret leaf, then over the uniform tape `w` is distributed
+    identically for every secret, so `O ∪ {w}` stays jointly blinded by the *same*
+    `T` (the joint tuple is secret-free iff every member is — no secret leaf in any
+    cone).  Hence every subset of the returned set is `d`-probing secure, which is
+    exactly the guarantee the space-split consumes.
+
+    `chosen` is returned unconditionally (force-included), and the replay test is
+    applied only to the *other* candidates.  This is deliberate: `chosen` was
+    certified secure by `checkProbeRootsT`, which uses lazy **factoring** (tiers
+    2–3), so `chosen∘T` is *semantically* secret-free — but the replay test is a
+    *syntactic* `tupleHasSecret` that does not expand products, so on the
+    unfactored wire it can fail to re-derive that.  Trusting the test to re-admit
+    `chosen` would (a) be unsound to omit and (b) let `safe = ∅`, which makes the
+    caller's `unsafeWires = wires \ safe` fail to shrink → non-termination.  Force-
+    including `chosen` is sound (its joint secret-freeness is the engine's verdict)
+    and guarantees `chosen ⊆ safe`.
+
+    For the extra candidates, the test replays `T` with `substNode` (single-level
+    `r ← t`, re-canonicalising) and decides secret-freeness with `tupleHasSecret`.
+    No secret leaf in the canonical DAG ⇒ genuinely secret-free (sound); the
+    converse can fail (the DAG does not expand products), so this may under-extend
+    but never adds a non-blinded wire — it can only lose yield, never flip a verdict. -/
+def couplingExtend (g : GlobalDAG) (coupling : Array (NodeId × NodeId))
+    (chosen : Array String) (candidates : Array (String × NodeId))
+    : GlobalDAG × Array String :=
+  let chosenSet : HashMap String Unit := chosen.foldl (fun m w => m.insert w ()) {}
+  let (g, blinded) := candidates.foldl (fun (acc : GlobalDAG × Array String) c =>
+    let (g, keep) := acc
+    if chosenSet.contains c.1 then (g, keep)             -- `chosen` is force-included below
+    else
+      -- w' := w ∘ T  (apply the recorded substitutions in order).
+      let (g, w') := coupling.foldl
+        (fun (st : GlobalDAG × NodeId) rt =>
+          let (g, cur) := st
+          let (g, _, cur') := substNode g rt.1 rt.2 ({} : HashMap NodeId NodeId) cur
+          (g, cur'))
+        (g, c.2)
+      if tupleHasSecret g.dag #[w'] then (g, keep)        -- secret survives ⇒ not blinded
+      else (g, keep.push c.1)) (g, #[])                   -- w∘T secret-free ⇒ blinded
+  (g, chosen ++ blinded)
 
 end verif
