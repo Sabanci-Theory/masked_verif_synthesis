@@ -237,6 +237,10 @@ partial def dfsRoot (dag : DAG) (s : DFSState) (rootId : NodeId) : DFSState :=
 
 structure ProbeState where
   roots            : Array NodeId
+  /-- The probe roots as a set.  Needed to keep *observed* nodes out of the
+      simple-rule worklist: relabeling a random that is itself a probe root is
+      unsound (conditioned on the observed `r`, `x = e+r` is not fresh). -/
+  rootSet          : HashMap NodeId Unit
   xorParCount      : HashMap NodeId Nat
   totalParCount    : HashMap NodeId Nat
   mulDepth         : HashMap NodeId Nat
@@ -275,6 +279,7 @@ def initProbeByIds (g : GlobalDAG) (rootIds : Array NodeId) : GlobalDAG × Probe
   let todo := todoUnsorted.qsort (fun a b => (s.mulDepth[a]?).getD 0 < (s.mulDepth[b]?).getD 0)
   (g, {
     roots            := rootIds
+    rootSet          := rootSet
     xorParCount      := s.xorParCount
     totalParCount    := s.totalParCount
     mulDepth         := s.mulDepth
@@ -316,14 +321,30 @@ partial def decrementParent (dag : DAG) (ps : ProbeState) (nodeId : NodeId) (was
             decrementParent dag acc cid false) ps
         | _ => ps
     else
-      if ps.isRandom dag nodeId && tpc' == 1 && xpc' == 1 then insertTodoByDepth ps nodeId
+      -- Cascade re-insertion.  The `rootSet` check mirrors `initProbeByIds` (and
+      -- `findSimpleRandom`'s in the general loop): a random that is itself a probe
+      -- ROOT must never be relabeled by the simple rule — its value is observed,
+      -- so conditioned on it, `x = e+r` is not uniform and marking `x` fresh
+      -- hides secrets the tuple actually exposes (false SECURE; see
+      -- TestRootBug.lean's `(r, s+r, r+r3)`).  Such tuples fall through to the
+      -- complete general loop, which substitutes roots correctly.
+      if ps.isRandom dag nodeId && !ps.rootSet.contains nodeId
+         && tpc' == 1 && xpc' == 1 then insertTodoByDepth ps nodeId
       else ps
 
 /-- Fire the simple rule on random `r`: splice its unique additive parent `x`
-    away and drop `r`.  Returns `x` too — the coupling relabel for this step is
-    `r ← x` (`x = e+r`), recorded by `rewriteLoop`. -/
+    away and drop `r`.
+
+    NOTE: this tier does **not** surface a coupling.  The semantic relabel of a
+    step is `r ← x` (`x = e+r`), but a *cascade* step fires on a
+    `rewrittenRandoms` node `x` (not a tape variable), and the pair `(x, x₂)` is
+    not a tape relabel: replaying it by node substitution diverges from the
+    certified derivation (occurrences of `x` that collapsed to `r` are missed),
+    and `evalCoupledEnv` ignores `env` bindings at non-leaf ids entirely.
+    Couplings for the extension come from `checkProbeCompleteT`, whose steps are
+    always leaf relabels (DECISIONS.md 2026-07-01). -/
 def applyRewrite (g : GlobalDAG) (ps : ProbeState) (r : NodeId)
-    : GlobalDAG × ProbeState × NodeId :=
+    : GlobalDAG × ProbeState :=
   let x := ((ps.parents[r]?).getD #[])[0]!
   let xCh := match g.dag.kind? x with
     | some (NodeKind.xorNode ch) => ch
@@ -341,19 +362,18 @@ def applyRewrite (g : GlobalDAG) (ps : ProbeState) (r : NodeId)
       let ps := { ps with parents := ps.parents.insert ci newPars }
       decrementParent g.dag ps ci true)
     ps
-  (g, ps, x)
+  (g, ps)
 
 partial def rewriteLoop (g : GlobalDAG) (ps : ProbeState)
-    (coupling : Array (NodeId × NodeId))
-    : GlobalDAG × ProbeState × Bool × Array (NodeId × NodeId) :=
-  if isSecure g ps then (g, ps, true, coupling)
+    : GlobalDAG × ProbeState × Bool :=
+  if isSecure g ps then (g, ps, true)
   else
     match ps.todo[0]? with
-    | none   => (g, ps, false, coupling)
+    | none   => (g, ps, false)
     | some r =>
       let ps := { ps with todo := ps.todo.eraseIdx! 0 }
-      let (g', ps', x) := applyRewrite g ps r
-      rewriteLoop g' ps' (coupling.push (r, x))
+      let (g', ps') := applyRewrite g ps r
+      rewriteLoop g' ps'
 
 -- ============================================================
 -- Complete fallback: full optimistic sampling (simple + general rule)
@@ -455,13 +475,17 @@ def substTupleByE (g : GlobalDAG) (tuple : Array NodeId) (r e : NodeId)
     (g, memo, acc.push root')) (g, ({} : HashMap NodeId NodeId), #[])
   (g, roots, t)
 
-/-- `e` for an additive occurrence `x1 = e + r`: `x1`'s other children. -/
+/-- `e` for an additive occurrence `x1 = e + r`: `x1`'s other children.
+    `x1` must be a XOR node (both find-rules guarantee it).  Anything else is a
+    hard error: falling back to `e := x1` would return a context *containing*
+    `r`, making the relabel `r ← e+r` non-bijective — a silent soundness hole. -/
 def contextOf (g : GlobalDAG) (x1 r : NodeId) : GlobalDAG × NodeId :=
   match g.dag.kind? x1 with
   | some (NodeKind.xorNode ch) =>
     let (dag, e) := g.dag.mkXor (ch.filter (· != r))
     ({ g with dag }, e)
-  | _ => (g, x1)
+  | _ => panic! s!"contextOf: node {x1} is not a xorNode — additive occurrence \
+                   expected (a non-XOR context would make r ← e+r non-bijective)"
 
 /-- Simple-rule candidate: a random occurring exactly once, additively, not a
     root.  Among candidates prefer the least multiplicative depth (the additive
@@ -567,7 +591,7 @@ def checkProbeCompleteT (g : GlobalDAG) (tuple : Array NodeId)
     : GlobalDAG × Bool × Array (NodeId × NodeId) :=
   rewriteComplete g tuple {} ((g.dag.randoms.size + 2) * 256) false #[]
 
-/-- Probe check with lazy factoring, returning the coupling `T` that certifies it.
+/-- Verdict-only probe check with lazy factoring:
     (1) reference-counted simple rule on the **unfactored** roots;
     (2) on failure, factor and retry the simple rule;
     (3) on failure, the complete general loop, which itself factors lazily
@@ -575,77 +599,196 @@ def checkProbeCompleteT (g : GlobalDAG) (tuple : Array NodeId)
     Factoring widens the certifiable class but is costly, so it is paid for only
     when the cheaper simple rule cannot discharge the probe.
 
-    `T` is the ordered list of `(r, t)` optimistic-sampling relabels (`r ← t = e+r`)
-    applied by the successful tier; factoring steps contribute nothing (a reshape,
-    not a relabel).  In the simple/reference-counted tier the relabel of an
-    eliminated random `r` is `r ← x`, its unique additive parent (`x = e+r`).
-    Meaningful only when the returned verdict is `true`. -/
-def checkProbeRootsT (g : GlobalDAG) (rootIds : Array NodeId)
-    : GlobalDAG × Bool × Array (NodeId × NodeId) :=
-  let (g, ps)            := initProbeByIds g rootIds
-  let (g, ps, sec, cpl)  := rewriteLoop g ps #[]
-  if sec then (g, true, cpl)
+    Deliberately does **not** return a coupling: the reference-counted tiers'
+    cascade steps are not tape relabels (see `applyRewrite`), so their recorded
+    pairs would not be replayable by `substNode`/`evalCoupledEnv`.  Discharges
+    that need the certifying coupling `T` for the extension must use
+    `checkProbeCompleteT` directly (as `checkChosenCoupling` does). -/
+def checkProbeRoots (g : GlobalDAG) (rootIds : Array NodeId) : GlobalDAG × Bool :=
+  let (g, ps)       := initProbeByIds g rootIds
+  let (g, ps, sec)  := rewriteLoop g ps
+  if sec then (g, true)
   else
     let (dag, froots) := g.dag.factor ps.roots
     let g := { g with dag }
-    let (g, ps2)           := initProbeByIds g froots
-    let (g, _, sec2, cpl2) := rewriteLoop g ps2 #[]
-    if sec2 then (g, true, cpl2)
-    else checkProbeCompleteT g rootIds
+    let (g, ps2)      := initProbeByIds g froots
+    let (g, _, sec2)  := rewriteLoop g ps2
+    if sec2 then (g, true)
+    else
+      let (g, sec3, _) := checkProbeCompleteT g rootIds
+      (g, sec3)
 
-/-- Verdict-only wrapper over `checkProbeRootsT`, dropping the coupling.  Used by
-    discharges that only need the SECURE/INSECURE bit (e.g. the OptSampling
-    large-set `union` test), not the extension. -/
-def checkProbeRoots (g : GlobalDAG) (rootIds : Array NodeId) : GlobalDAG × Bool :=
-  let (g, sec, _) := checkProbeRootsT g rootIds
-  (g, sec)
+partial def evalNode (dag : DAG) (env : Array UInt64) (n : NodeId) (cache : Array (Option UInt64))
+    : Array (Option UInt64) × UInt64 :=
+  match cache[n]! with
+  | some v => (cache, v)
+  | none =>
+    let (cache, v) := match dag.kind? n with
+      | some (NodeKind.constVal b) => (cache, if b then 0xFFFFFFFFFFFFFFFF else 0)
+      -- All leaves (Secret, Random, AND Public) read their lanes from `env`.
+      -- Publics must stay symbolic here: evaluating them as a constant would
+      -- blind the PIT to secret-dependence that only shows jointly with a
+      -- public (e.g. `s·p` at `p = 0`), wasting exact-phase calls.
+      | some (NodeKind.leaf _) => (cache, env[n]!)
+      | some (NodeKind.xorNode ch) =>
+        ch.foldl (fun (c, acc) chId =>
+          let (c, vCh) := evalNode dag env chId c
+          (c, acc ^^^ vCh)) (cache, 0)
+      | some (NodeKind.andNode ch) =>
+        ch.foldl (fun (c, acc) chId =>
+          let (c, vCh) := evalNode dag env chId c
+          (c, acc &&& vCh)) (cache, 0xFFFFFFFFFFFFFFFF)
+      | _ => (cache, 0)
+    (cache.set! n v, v)
 
-/-- **Coupling-driven probe-set extension.**  Given the coupling `T` (the ordered
-    `(r, t)` substitutions that certified a chosen probe `O`) and the candidate
-    observations `(name, node)`, return the names whose `w∘T` is secret-free — the
-    certified-safe set `ŷ`.
+/-- Coupled random environment: bind each random `r` to the value of its *net*
+    image `σ(r)` under the whole coupling, so that `eval(w, env) = eval(w∘T)`.
+    Since `σ(r_k) = σ_{>k}(e_k) + r_k`, the later substitutions must already be in
+    `env` when we process `r_k` — hence **reverse** (right-to-left) folding.  Each
+    step sets `env[r] := eval(e+r)` (`rt.2 = e+r`); no extra XOR (that was the
+    `r ← e` collapse bug). -/
+def evalCoupledEnv (dag : DAG) (coupling : Array (NodeId × NodeId)) (initialEnv : Array UInt64)
+    : Array UInt64 :=
+  coupling.foldr (fun rt env =>
+    let cache : Array (Option UInt64) := (List.replicate dag.nextId none).toArray
+    let (_, ve) := evalNode dag env rt.2 cache
+    env.set! rt.1 ve)
+    initialEnv
 
-    Soundness.  `T` is a composition of optimistic-sampling relabels `r ← e+r`,
-    each a measure-preserving bijection on the random tape, so `T` is one too.  If
-    `w∘T` mentions no secret leaf, then over the uniform tape `w` is distributed
-    identically for every secret, so `O ∪ {w}` stays jointly blinded by the *same*
-    `T` (the joint tuple is secret-free iff every member is — no secret leaf in any
-    cone).  Hence every subset of the returned set is `d`-probing secure, which is
-    exactly the guarantee the space-split consumes.
+/-- splitmix64 finalizer.  The raw state of a power-of-two-modulus LCG must not
+    be used as PIT lanes directly: bit `k` of the state has period `2^(k+1)`
+    (bit 0 alternates, bit 1 cycles with period 4, …), so the low lanes assign
+    leaves highly structured, colliding values and carry almost no rejection
+    power.  Mixing makes every output bit a pseudo-random function of the whole
+    state, so all 64 lanes reject independently. -/
+@[inline]
+def mix64 (z : UInt64) : UInt64 :=
+  let z := (z ^^^ (z >>> 30)) * 0xBF58476D1CE4E5B9
+  let z := (z ^^^ (z >>> 27)) * 0x94D049BB133111EB
+  z ^^^ (z >>> 31)
 
-    `chosen` is returned unconditionally (force-included), and the replay test is
-    applied only to the *other* candidates.  This is deliberate: `chosen` was
-    certified secure by `checkProbeRootsT`, which uses lazy **factoring** (tiers
-    2–3), so `chosen∘T` is *semantically* secret-free — but the replay test is a
-    *syntactic* `tupleHasSecret` that does not expand products, so on the
-    unfactored wire it can fail to re-derive that.  Trusting the test to re-admit
-    `chosen` would (a) be unsound to omit and (b) let `safe = ∅`, which makes the
-    caller's `unsafeWires = wires \ safe` fail to shrink → non-termination.  Force-
-    including `chosen` is sound (its joint secret-freeness is the engine's verdict)
-    and guarantees `chosen ⊆ safe`.
+def mkEnv (dag : DAG) (secretsZero : Bool) : Array UInt64 := Id.run do
+  let mut env := (List.replicate dag.nextId 0).toArray
+  let mut seed : UInt64 := 0xDEADBEEFCAFEBAB0
+  for i in [0:dag.nextId] do
+    seed := seed * 6364136223846793005 + 1442695040888963407
+    let v := mix64 seed
+    if dag.isSecretNode i then
+      env := env.set! i (if secretsZero then 0 else v)
+    else
+      env := env.set! i v
+  env
 
-    For the extra candidates, the test replays `T` with `substNode` (single-level
-    `r ← t`, re-canonicalising) and decides secret-freeness with `tupleHasSecret`.
-    No secret leaf in the canonical DAG ⇒ genuinely secret-free (sound); the
-    converse can fail (the DAG does not expand products), so this may under-extend
-    but never adds a non-blinded wire — it can only lose yield, never flip a verdict. -/
+-- ============================================================
+-- ANF (algebraic normal form) — exact secret-freeness fallback
+--
+-- A monomial is a sorted, distinct array of leaf NodeIds (a multilinear product).
+-- An ANF is a set of monomials (F2 polynomial), keyed by canonical string; two
+-- equal monomials cancel.  Used when the syntactic `tupleHasSecret` cannot see a
+-- product-cancellation that the coupling induced (the case where our XOR-only
+-- replay under-detects vs the true, expanded polynomial).
+-- ============================================================
+
+/-- Sorted union of two monomials (`x·x = x`, so repeated variables collapse). -/
+def monoUnion (a b : Array NodeId) : Array NodeId :=
+  let sorted := (a ++ b).qsort (· < ·)
+  sorted.foldl (fun acc x =>
+    if acc.isEmpty || acc[acc.size - 1]! != x then acc.push x else acc) #[]
+
+@[inline] def monoKey (m : Array NodeId) : String :=
+  String.intercalate "," (m.toList.map toString)
+
+/-- Toggle a monomial into an ANF set (F2: two copies cancel). -/
+@[inline] def anfToggle (s : HashMap String (Array NodeId)) (m : Array NodeId)
+    : HashMap String (Array NodeId) :=
+  let k := monoKey m
+  if s.contains k then s.erase k else s.insert k m
+
+/-- XOR (symmetric difference) of two ANF sets. -/
+def anfXor (a b : HashMap String (Array NodeId)) : HashMap String (Array NodeId) :=
+  b.fold (fun acc _ m => anfToggle acc m) a
+
+/-- Product of two ANF sets: distribute, unioning each monomial pair. -/
+def anfAnd (a b : HashMap String (Array NodeId)) : HashMap String (Array NodeId) :=
+  a.fold (fun acc _ mp =>
+    b.fold (fun acc _ mq => anfToggle acc (monoUnion mp mq)) acc)
+    ({} : HashMap String (Array NodeId))
+
+/-- Full ANF of `n` over its leaves, memoised by NodeId. -/
+partial def toANF (dag : DAG) (memo : HashMap NodeId (HashMap String (Array NodeId)))
+    (n : NodeId) : HashMap NodeId (HashMap String (Array NodeId)) × HashMap String (Array NodeId) :=
+  match memo[n]? with
+  | some a => (memo, a)
+  | none   =>
+    let (memo, a) := match dag.kind? n with
+      | some (NodeKind.constVal false) => (memo, ({} : HashMap String (Array NodeId)))
+      | some (NodeKind.constVal true)  =>
+        (memo, (({} : HashMap String (Array NodeId)).insert "" #[]))
+      | some (NodeKind.leaf _) =>
+        (memo, (({} : HashMap String (Array NodeId)).insert (monoKey #[n]) #[n]))
+      | some (NodeKind.xorNode ch) =>
+        ch.foldl (fun (m, acc) c =>
+          let (m, ac) := toANF dag m c
+          (m, anfXor acc ac)) (memo, ({} : HashMap String (Array NodeId)))
+      | some (NodeKind.andNode ch) =>
+        ch.foldl (fun (m, acc) c =>
+          let (m, ac) := toANF dag m c
+          (m, anfAnd acc ac)) (memo, (({} : HashMap String (Array NodeId)).insert "" #[]))
+      | _ => (memo, ({} : HashMap String (Array NodeId)))
+    (memo.insert n a, a)
+
+/-- Exact secret-freeness via ANF: `w` is secret-free iff no surviving monomial of
+    its ANF contains a `Secret` leaf.  Sound *and* complete (ANF is the canonical
+    F2 form), so this catches the product-cancellations the syntactic
+    `tupleHasSecret` misses. -/
+def anfSecretFree (dag : DAG) (w : NodeId) : Bool :=
+  let (_, anf) := toANF dag ({} : HashMap NodeId (HashMap String (Array NodeId))) w
+  anf.fold (fun free _ m => free && !m.any (fun id => dag.isSecretNode id)) true
+
+/-- **Coupling-driven probe-set extension.**  Given the coupling `T` and the
+    candidate observations `(name, node)`, return the names whose `w∘T` is
+    secret-free — the certified-safe set `ŷ`.  `T` is a composition of
+    measure-preserving relabels `r ← e+r`, so any wire it blinds joins the safe
+    set (every subset stays `d`-probing secure).
+
+    `chosen` is force-included (its joint secret-freeness is the engine's verdict;
+    this is also what keeps `unsafeWires = wires \ safe` shrinking → termination).
+    Each other candidate is decided **exactly**, in three phases:
+      1. PIT fast-reject — a bit-sliced F2 identity test on the coupled env; a lane
+         disagreement means genuine secret-dependence (sound to reject).
+      2. syntactic `substNode`+`tupleHasSecret` (XOR-canonicalisation only);
+      3. ANF fallback (`anfSecretFree`) — exact, catches the product-cancellations
+         phase 2 misses.  Acceptance never rests on the probabilistic PIT. -/
 def couplingExtend (g : GlobalDAG) (coupling : Array (NodeId × NodeId))
     (chosen : Array String) (candidates : Array (String × NodeId))
-    : GlobalDAG × Array String :=
+    : GlobalDAG × Array String × Nat :=
   let chosenSet : HashMap String Unit := chosen.foldl (fun m w => m.insert w ()) {}
-  let (g, blinded) := candidates.foldl (fun (acc : GlobalDAG × Array String) c =>
-    let (g, keep) := acc
-    if chosenSet.contains c.1 then (g, keep)             -- `chosen` is force-included below
+  let envRandFinal := evalCoupledEnv g.dag coupling (mkEnv g.dag false)
+  let envZeroFinal := evalCoupledEnv g.dag coupling (mkEnv g.dag true)
+  let (g, blinded, anfCount) := candidates.foldl (fun (acc : GlobalDAG × Array String × Nat) c =>
+    let (g, keep, anfCount) := acc
+    if chosenSet.contains c.1 then (g, keep.push c.1, anfCount)
     else
-      -- w' := w ∘ T  (apply the recorded substitutions in order).
-      let (g, w') := coupling.foldl
-        (fun (st : GlobalDAG × NodeId) rt =>
-          let (g, cur) := st
-          let (g, _, cur') := substNode g rt.1 rt.2 ({} : HashMap NodeId NodeId) cur
-          (g, cur'))
-        (g, c.2)
-      if tupleHasSecret g.dag #[w'] then (g, keep)        -- secret survives ⇒ not blinded
-      else (g, keep.push c.1)) (g, #[])                   -- w∘T secret-free ⇒ blinded
-  (g, chosen ++ blinded)
+      -- Phase 1: PIT fast-reject.  A lane disagreement between secrets-random and
+      -- secrets-zero witnesses genuine secret-dependence, so rejecting is sound
+      -- (it can only cost yield if the env is imperfect, never admit a bad wire).
+      let (_, valRand) := evalNode g.dag envRandFinal c.2 ((List.replicate g.dag.nextId none).toArray)
+      let (_, valZero) := evalNode g.dag envZeroFinal c.2 ((List.replicate g.dag.nextId none).toArray)
+      if valRand != valZero then
+        (g, keep, anfCount)
+      else
+        -- Acceptance is EXACT.  Apply T (`w' = w∘T`), then:
+        --   Phase 2: syntactic `tupleHasSecret` (fast, XOR-canonicalisation only);
+        --   Phase 3: ANF fallback (exact, catches product-cancellations Phase 2 misses).
+        let (g, w') := coupling.foldl
+          (fun (st : GlobalDAG × NodeId) rt =>
+            let (g, cur) := st
+            let (g, _, cur') := substNode g rt.1 rt.2 ({} : HashMap NodeId NodeId) cur
+            (g, cur'))
+          (g, c.2)
+        if !tupleHasSecret g.dag #[w'] then (g, keep.push c.1, anfCount)
+        else if anfSecretFree g.dag w' then (g, keep.push c.1, anfCount + 1)
+        else (g, keep, anfCount)) (g, #[], 0)
+  (g, blinded, anfCount)
 
 end verif

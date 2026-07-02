@@ -74,6 +74,8 @@ structure Stats where
       sets that produced it.  Keys = distinct extensions; values with ≥2 entries
       are the extension collisions: different `d`-wire probes yielding one safe set. -/
   extensionWitnesses  : HashMap String (Array ExtensionWitness) := {}
+  anfFallbacks        : Nat := 0
+  deriving Inhabited
 
 namespace Stats
 
@@ -133,7 +135,7 @@ def ppExtensionCollisions (s : Stats) : String :=
       ++ String.intercalate "\n" body
 
 def pp (s : Stats) : String :=
-  s!"  total discharges       : {s.totalDischarges}\n  distinct probe sets    : {s.verdictCache.size}\n  repeated discharges    : {s.redundantUnionDischarges + s.redundantChosenDischarges}  (union {s.redundantUnionDischarges}, chosen {s.redundantChosenDischarges})\n  distinct extensions    : {s.extensionWitnesses.size}\n  repeated extensions    : {s.redundantExtensions}\n  successful main probes : {s.successMain}\n  free wires (sum)       : {s.freeWiresSum}\n  free wires (avg/main)  : {s.avgFreeWires}" ++ s.ppExtensionCollisions
+  s!"  total discharges       : {s.totalDischarges}\n  distinct probe sets    : {s.verdictCache.size}\n  repeated discharges    : {s.redundantUnionDischarges + s.redundantChosenDischarges}  (union {s.redundantUnionDischarges}, chosen {s.redundantChosenDischarges})\n  distinct extensions    : {s.extensionWitnesses.size}\n  repeated extensions    : {s.redundantExtensions}\n  successful main probes : {s.successMain}\n  free wires (sum)       : {s.freeWiresSum}\n  free wires (avg/main)  : {s.avgFreeWires}\n  anf fallbacks          : {s.anfFallbacks}" ++ s.ppExtensionCollisions
 
 end Stats
 
@@ -215,15 +217,37 @@ def candidatesOf (fw : HashMap String NodeId) (wires : Array String)
     Mirrors `checkProbeByNames`'s discharge accounting (memo hit vs miss) so the
     `Stats` counts stay comparable, but always runs the engine: the extension
     needs `T`, which the verdict memo does not carry.  (Repeated `chosen`
-    discharges are rare — bounded by `redundantClosures` — so this costs little.) -/
+    discharges are rare — bounded by `redundantExtensions` — so this costs little.)
+
+    The coupling is derived by the **general substitution loop** (`checkProbeCompleteT`),
+    matching `witness-replay`'s `rewriteWithWitness`, *not* the reference-counted
+    fast path inside `checkProbeRoots` (which surfaces no coupling — its cascade
+    steps are not tape relabels; see `applyRewrite`).  The reference-counted rule
+    also records contexts from the original DAG and stops at the count invariant,
+    producing an impoverished coupling that blinds far fewer wires; the
+    substitution loop's coupling (contexts reflect each prior substitution)
+    blinds strictly more.  It still lazily factors, so it certifies everything
+    the fast path does (verdict unchanged), and factors only where the general
+    rule stalls.
+
+    `verdictCache` is shared with `checkProbeByNames`, whose entries come from
+    the *tiered* engine.  The two are believed verdict-equivalent (the general
+    loop subsumes the simple rule and factors on stall), but nothing proves it,
+    so on a memo hit we cross-check: a disagreement means one engine has a
+    soundness or completeness bug and must not be papered over. -/
 def checkChosenCoupling (g : GlobalDAG) (fw : HashMap String NodeId)
     (stats : Stats) (names : Array String)
     : GlobalDAG × Bool × Array (NodeId × NodeId) × Stats :=
   let key := setKey names
   let ids := wireNamesToIds fw names
-  let (g, sec, coupling) := checkProbeRootsT g ids
+  let (g, sec, coupling) := checkProbeCompleteT g ids
   let stats := match stats.verdictCache[key]? with
-    | some _ => stats.recordHit .chosen
+    | some cached =>
+      if cached != sec then
+        panic! s!"checkChosenCoupling: engine disagreement on probe \
+                  [{String.intercalate ", " (key.splitOn "\n")}]: \
+                  tiered engine said secure={cached}, general loop says secure={sec}"
+      else stats.recordHit .chosen
     | none   => stats.recordMiss key sec
   (g, sec, coupling, stats)
 
@@ -252,9 +276,10 @@ partial def checkAllSingle
       else
         -- Grow the safe set: coupling extension (`extend`), or the naive baseline
         -- (`extend := false` — the chosen tuple covers only its own subsets).
-        let (g, safe) :=
+        let (g, safe, anfCount) :=
           if extend then couplingExtend g coupling chosen (candidatesOf fw wires)
-          else (g, chosen)
+          else (g, chosen, 0)
+        let stats := { stats with anfFallbacks := stats.anfFallbacks + anfCount }
         let free  := safe.size - chosen.size
         let stats := stats.addSuccess free
         let stats := stats.recordExtension safe chosen (ppWorklist wl0)
@@ -296,9 +321,10 @@ partial def checkAllMulti
         if !chosenSec then (g, stats, .Insecure chosen)
         else
           -- Grow the safe set: coupling extension (`extend`), or the naive baseline.
-          let (g, safe) :=
+          let (g, safe, anfCount) :=
             if extend then couplingExtend g coupling chosen (candidatesOf fw allWires)
-            else (g, chosen)
+            else (g, chosen, 0)
+          let stats := { stats with anfFallbacks := stats.anfFallbacks + anfCount }
           let free  := safe.size - chosen.size
           let stats := stats.addSuccess free
           let stats := stats.recordExtension safe chosen (ppWorklist wl)
