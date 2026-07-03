@@ -205,6 +205,10 @@ partial def dfsChild (dag : DAG) (s : DFSState) (childId parentId : NodeId)
     (childDepth : Nat) (parentIsXor : Bool) : DFSState :=
   let tpc  := (s.totalParCount[childId]?).getD 0 + 1
   let xpc  := (s.xorParCount[childId]?).getD 0 + (if parentIsXor then 1 else 0)
+  -- `mulDepth` is the min over the paths seen *so far*, but a node's descendants
+  -- are only explored on its first visit — a later, shallower path updates the
+  -- node itself, not what lies below it.  So depths under a reconverging node
+  -- can be overestimates.  Fine: only the ordering heuristics consume it.
   let d    := min childDepth ((s.mulDepth[childId]?).getD (childDepth + 1))
   let pars := ((s.parents[childId]?).getD #[]).push parentId
   let s := { s with
@@ -399,32 +403,14 @@ partial def rewriteLoop (g : GlobalDAG) (ps : ProbeState)
 -- returns `false` (sound: only ever a false negative, never a false "secure").
 -- ============================================================
 
-/-- Does any `Secret` leaf occur in the sub-DAG rooted at `n`? -/
-partial def reachesSecretAux (dag : DAG) (vis : HashMap NodeId Bool) (n : NodeId)
+/-- Memoised DFS: does any node in the sub-DAG rooted at `n` satisfy `p`?
+    The memo `vis` is keyed by node for a *fixed* `p`, so callers checking many
+    roots against one predicate can share it across calls.  Both reachability
+    questions of the engine are instances: secret-freeness (`p = isSecretNode`)
+    and the side-condition `r ∉ vars(e)` (`p = (· == r)`). -/
+partial def anyNodeAux (dag : DAG) (p : NodeId → Bool) (vis : HashMap NodeId Bool) (n : NodeId)
     : HashMap NodeId Bool × Bool :=
-  match vis[n]? with
-  | some b => (vis, b)
-  | none   =>
-    match dag.kind? n with
-    | some (NodeKind.leaf (VarType.Secret _)) => (vis.insert n true, true)
-    | some (NodeKind.xorNode ch)
-    | some (NodeKind.andNode ch) =>
-      let (vis, b) := ch.foldl (fun (v, acc) c =>
-        if acc then (v, true) else reachesSecretAux dag v c) (vis, false)
-      (vis.insert n b, b)
-    | _ => (vis.insert n false, false)
-
-/-- Probing `Test`: is the whole tuple free of secrets? -/
-def tupleHasSecret (dag : DAG) (tuple : Array NodeId) : Bool :=
-  (tuple.foldl (fun (v, acc) r =>
-    if acc then (v, true) else reachesSecretAux dag v r)
-    (({} : HashMap NodeId Bool), false)).2
-
-/-- Is `target` reachable from `n` (does `n`'s sub-DAG mention `target`)?  Used to
-    enforce the side-condition `r ∉ vars(e)`. -/
-partial def reachesNodeAux (dag : DAG) (target : NodeId) (vis : HashMap NodeId Bool) (n : NodeId)
-    : HashMap NodeId Bool × Bool :=
-  if n == target then (vis, true)
+  if p n then (vis, true)
   else match vis[n]? with
   | some b => (vis, b)
   | none   =>
@@ -432,13 +418,15 @@ partial def reachesNodeAux (dag : DAG) (target : NodeId) (vis : HashMap NodeId B
     | some (NodeKind.xorNode ch)
     | some (NodeKind.andNode ch) =>
       let (vis, b) := ch.foldl (fun (v, acc) c =>
-        if acc then (v, true) else reachesNodeAux dag target v c) (vis, false)
+        if acc then (v, true) else anyNodeAux dag p v c) (vis, false)
       (vis.insert n b, b)
     | _ => (vis.insert n false, false)
 
-@[inline]
-def nodeReaches (dag : DAG) (target n : NodeId) : Bool :=
-  (reachesNodeAux dag target ({} : HashMap NodeId Bool) n).2
+/-- Probing `Test`: is the whole tuple free of secrets? -/
+def tupleHasSecret (dag : DAG) (tuple : Array NodeId) : Bool :=
+  (tuple.foldl (fun (v, acc) r =>
+    if acc then (v, true) else anyNodeAux dag dag.isSecretNode v r)
+    (({} : HashMap NodeId Bool), false)).2
 
 /-- Substitute leaf `r` by node `t` (= `e+r`) throughout `n`, single level (never
     descending into `t`).  Memoised; `mkXor`/`mkAnd` re-canonicalise. -/
@@ -463,29 +451,26 @@ partial def substNode (g : GlobalDAG) (r t : NodeId) (memo : HashMap NodeId Node
       ({ g with dag }, memo.insert n m, m)
     | _ => (g, memo.insert n n, n)
 
-/-- Apply `r ← e+r` to every root (`e` given as a node).  Also returns the
-    substitution node `t = e+r`, so the caller can record the coupling step
-    `(r, t)` for replay on wires outside the tuple. -/
-def substTupleByE (g : GlobalDAG) (tuple : Array NodeId) (r e : NodeId)
-    : GlobalDAG × Array NodeId × NodeId :=
-  let (dag, t) := g.dag.mkXor #[e, r]
-  let g := { g with dag }
-  let (g, _, roots) := tuple.foldl (fun (g, memo, acc) root =>
-    let (g, memo, root') := substNode g r t memo root
-    (g, memo, acc.push root')) (g, ({} : HashMap NodeId NodeId), #[])
-  (g, roots, t)
+/-- Apply the relabel `r ← t` to every root, sharing one `substNode` memo across
+    the whole tuple.
 
-/-- `e` for an additive occurrence `x1 = e + r`: `x1`'s other children.
-    `x1` must be a XOR node (both find-rules guarantee it).  Anything else is a
-    hard error: falling back to `e := x1` would return a context *containing*
-    `r`, making the relabel `r ← e+r` non-bijective — a silent soundness hole. -/
-def contextOf (g : GlobalDAG) (x1 r : NodeId) : GlobalDAG × NodeId :=
-  match g.dag.kind? x1 with
-  | some (NodeKind.xorNode ch) =>
-    let (dag, e) := g.dag.mkXor (ch.filter (· != r))
-    ({ g with dag }, e)
-  | _ => panic! s!"contextOf: node {x1} is not a xorNode — additive occurrence \
-                   expected (a non-XOR context would make r ← e+r non-bijective)"
+    `t` is the matched additive occurrence `x1 = e + r` **itself**: rebuilding
+    `t = mkXor #[e, r]` from a separately constructed context `e` (as an earlier
+    version did) is an identity — `x1`'s canonical child set *is* `e`'s children
+    plus `r`, so hash-consing re-interns the rebuilt node to `x1`.  Substituting
+    `r ← x1` directly therefore skips allocating `e` entirely.  Canonicalisation
+    does the rest: the matched occurrence collapses to a bare `r`
+    (`x1[r := x1]` flattens to `e + e + r = r`) and every other occurrence of
+    `r` absorbs `e`. -/
+def substTuple (g : GlobalDAG) (tuple : Array NodeId) (r t : NodeId)
+    : GlobalDAG × Array NodeId :=
+  let (g, _, roots) := tuple.foldl
+    (fun (acc : GlobalDAG × HashMap NodeId NodeId × Array NodeId) root =>
+      let (g, memo, rs) := acc
+      let (g, memo, root') := substNode g r t memo root
+      (g, memo, rs.push root'))
+    (g, ({} : HashMap NodeId NodeId), #[])
+  (g, roots)
 
 /-- Simple-rule candidate: a random occurring exactly once, additively, not a
     root.  Among candidates prefer the least multiplicative depth (the additive
@@ -504,8 +489,10 @@ def findSimpleRandom (randoms : Array NodeId) (s : DFSState) (rootSet : HashMap 
   return best.map (fun (r, x1, _) => (r, x1))
 
 /-- General-rule candidate: a not-yet-used random occurring ≥ 2× that has an
-    additive parent `x1` whose other children do not mention it.  Prefer the
-    greatest multiplicative depth. -/
+    additive parent `x1` whose other children do not mention it.  Among
+    candidates prefer the **least** multiplicative depth, mirroring
+    `findSimpleRandom` (the benchmarks reflect this order; preferring the
+    greatest depth was considered and never implemented). -/
 def findGeneralRandom (dag : DAG) (randoms : Array NodeId) (s : DFSState)
     (rootSet used : HashMap NodeId Unit)
     : Option (NodeId × NodeId) := Id.run do
@@ -515,9 +502,10 @@ def findGeneralRandom (dag : DAG) (randoms : Array NodeId) (s : DFSState)
     let occ := (s.totalParCount[r]?).getD 0 + (if rootSet.contains r then 1 else 0)
     if occ < 2 then continue
     if (s.xorParCount[r]?).getD 0 == 0 then continue
-    -- `reachesNodeAux`'s memo is keyed by node for a *fixed* target `r`, so we can
-    -- share one `vis` across all of `r`'s additive parents and their children
-    -- instead of re-walking the sub-DAG from scratch on every check.
+    -- `anyNodeAux`'s memo is keyed by node for a *fixed* predicate (here
+    -- `(· == r)`), so we can share one `vis` across all of `r`'s additive
+    -- parents and their children instead of re-walking the sub-DAG from
+    -- scratch on every check.
     let mut vis : HashMap NodeId Bool := {}
     let mut chosen : Option NodeId := none
     for x1 in (s.parents[r]?).getD #[] do
@@ -527,7 +515,7 @@ def findGeneralRandom (dag : DAG) (randoms : Array NodeId) (s : DFSState)
         let mut clear := true
         for c in ch do
           if clear && c != r then
-            let (vis', reaches) := reachesNodeAux dag r vis c
+            let (vis', reaches) := anyNodeAux dag (· == r) vis c
             vis := vis'
             if reaches then clear := false
         if clear then chosen := some x1
@@ -568,15 +556,13 @@ partial def rewriteComplete (g : GlobalDAG) (tuple : Array NodeId)
       (s.totalParCount[r]?).getD 0 > 0 || rootSet.contains r)
     match findSimpleRandom tupleRandoms s rootSet with
     | some (r, x1) =>
-      let (g, e)         := contextOf g x1 r
-      let (g, tuple', t) := substTupleByE g tuple r e
-      rewriteComplete g tuple' used (fuel - 1) false (coupling.push (r, t))
+      let (g, tuple') := substTuple g tuple r x1
+      rewriteComplete g tuple' used (fuel - 1) false (coupling.push (r, x1))
     | none =>
       match findGeneralRandom g.dag tupleRandoms s rootSet used with
       | some (r, x1) =>
-        let (g, e)         := contextOf g x1 r
-        let (g, tuple', t) := substTupleByE g tuple r e
-        rewriteComplete g tuple' (used.insert r ()) (fuel - 1) false (coupling.push (r, t))
+        let (g, tuple') := substTuple g tuple r x1
+        rewriteComplete g tuple' (used.insert r ()) (fuel - 1) false (coupling.push (r, x1))
       | none =>
         -- Both finds stalled.  If the form is already factored, give up;
         -- otherwise factor (to expose product-buried randoms) and retry.
@@ -585,11 +571,19 @@ partial def rewriteComplete (g : GlobalDAG) (tuple : Array NodeId)
           let (dag, tuple') := g.dag.factor tuple
           rewriteComplete { g with dag } tuple' used fuel true coupling
 
+/-- Fuel budget for the complete loop: a generous multiple of the circuit's
+    random count.  Termination is *argued* (each general step retires one random
+    into `used`, ≤ #randoms of them; simple steps between them shrink the tuple)
+    but not proved, so fuel is the safety net.  Exhausting it returns `false` —
+    only ever a false negative, never a false SECURE. -/
+def rewriteFuel (g : GlobalDAG) : Nat :=
+  (g.dag.randoms.size + 2) * 256
+
 /-- Entry point for the complete checker on a tuple of observation roots.
     Returns the coupling `T` (ordered `(r, t)` substitutions) used to certify it. -/
 def checkProbeCompleteT (g : GlobalDAG) (tuple : Array NodeId)
     : GlobalDAG × Bool × Array (NodeId × NodeId) :=
-  rewriteComplete g tuple {} ((g.dag.randoms.size + 2) * 256) false #[]
+  rewriteComplete g tuple {} (rewriteFuel g) false #[]
 
 /-- Verdict-only probe check with lazy factoring:
     (1) reference-counted simple rule on the **unfactored** roots;
@@ -650,7 +644,7 @@ partial def evalNode (dag : DAG) (env : Array UInt64) (n : NodeId) (cache : Arra
 def evalCoupledEnv (dag : DAG) (coupling : Array (NodeId × NodeId)) (initialEnv : Array UInt64)
     : Array UInt64 :=
   coupling.foldr (fun rt env =>
-    let cache : Array (Option UInt64) := (List.replicate dag.nextId none).toArray
+    let cache : Array (Option UInt64) := Array.replicate dag.nextId none
     let (_, ve) := evalNode dag env rt.2 cache
     env.set! rt.1 ve)
     initialEnv
@@ -668,7 +662,7 @@ def mix64 (z : UInt64) : UInt64 :=
   z ^^^ (z >>> 31)
 
 def mkEnv (dag : DAG) (secretsZero : Bool) : Array UInt64 := Id.run do
-  let mut env := (List.replicate dag.nextId 0).toArray
+  let mut env := Array.replicate dag.nextId 0
   let mut seed : UInt64 := 0xDEADBEEFCAFEBAB0
   for i in [0:dag.nextId] do
     seed := seed * 6364136223846793005 + 1442695040888963407
@@ -682,12 +676,26 @@ def mkEnv (dag : DAG) (secretsZero : Bool) : Array UInt64 := Id.run do
 -- ============================================================
 -- ANF (algebraic normal form) — exact secret-freeness fallback
 --
--- A monomial is a sorted, distinct array of leaf NodeIds (a multilinear product).
--- An ANF is a set of monomials (F2 polynomial), keyed by canonical string; two
--- equal monomials cancel.  Used when the syntactic `tupleHasSecret` cannot see a
--- product-cancellation that the coupling induced (the case where our XOR-only
--- replay under-detects vs the true, expanded polynomial).
+-- A monomial is a sorted, distinct array of leaf NodeIds (a multilinear
+-- product); an ANF is a set of monomials (an F2 polynomial), keyed by the
+-- monomial itself (`Array NodeId` is `Hashable`); two equal monomials cancel.
+-- Used when the syntactic `tupleHasSecret` cannot see a product-cancellation
+-- that the coupling induced (the case where our XOR-only replay under-detects
+-- vs the true, expanded polynomial).
+--
+-- ANF is worst-case exponential, so conversion carries a monomial budget:
+-- blowing it aborts the conversion and the caller must REJECT the candidate.
+-- Rejection only costs extension yield, never soundness — acceptance always
+-- rests on a completed, exact ANF.
 -- ============================================================
+
+abbrev ANF     := HashMap (Array NodeId) Unit
+abbrev ANFMemo := HashMap NodeId ANF
+
+/-- Monomial budget per ANF set.  Generous: the pipeline examples never exceed
+    a handful of monomials; this only guards against a pathological candidate
+    hanging the whole run. -/
+def anfBudget : Nat := 65536
 
 /-- Sorted union of two monomials (`x·x = x`, so repeated variables collapse). -/
 def monoUnion (a b : Array NodeId) : Array NodeId :=
@@ -695,55 +703,75 @@ def monoUnion (a b : Array NodeId) : Array NodeId :=
   sorted.foldl (fun acc x =>
     if acc.isEmpty || acc[acc.size - 1]! != x then acc.push x else acc) #[]
 
-@[inline] def monoKey (m : Array NodeId) : String :=
-  String.intercalate "," (m.toList.map toString)
-
 /-- Toggle a monomial into an ANF set (F2: two copies cancel). -/
-@[inline] def anfToggle (s : HashMap String (Array NodeId)) (m : Array NodeId)
-    : HashMap String (Array NodeId) :=
-  let k := monoKey m
-  if s.contains k then s.erase k else s.insert k m
+@[inline] def anfToggle (s : ANF) (m : Array NodeId) : ANF :=
+  if s.contains m then s.erase m else s.insert m ()
 
-/-- XOR (symmetric difference) of two ANF sets. -/
-def anfXor (a b : HashMap String (Array NodeId)) : HashMap String (Array NodeId) :=
-  b.fold (fun acc _ m => anfToggle acc m) a
+/-- XOR (symmetric difference) of two ANF sets; `none` = budget blown. -/
+def anfXor (a b : ANF) : Option ANF :=
+  let s := b.fold (fun acc m _ => anfToggle acc m) a
+  if s.size > anfBudget then none else some s
 
-/-- Product of two ANF sets: distribute, unioning each monomial pair. -/
-def anfAnd (a b : HashMap String (Array NodeId)) : HashMap String (Array NodeId) :=
-  a.fold (fun acc _ mp =>
-    b.fold (fun acc _ mq => anfToggle acc (monoUnion mp mq)) acc)
-    ({} : HashMap String (Array NodeId))
+/-- Product of two ANF sets: distribute, unioning each monomial pair;
+    `none` = budget blown (checked per distributed row, so intermediates stay
+    within a `b.size` overshoot of the budget). -/
+def anfAnd (a b : ANF) : Option ANF :=
+  a.fold (fun acc mp _ =>
+    match acc with
+    | none   => none
+    | some s =>
+      let s := b.fold (fun s mq _ => anfToggle s (monoUnion mp mq)) s
+      if s.size > anfBudget then none else some s)
+    (some ({} : ANF))
 
-/-- Full ANF of `n` over its leaves, memoised by NodeId. -/
-partial def toANF (dag : DAG) (memo : HashMap NodeId (HashMap String (Array NodeId)))
-    (n : NodeId) : HashMap NodeId (HashMap String (Array NodeId)) × HashMap String (Array NodeId) :=
+/-- Full ANF of `n` over its leaves, memoised by NodeId (an ANF is context-free,
+    so the memo is valid across roots and across candidates).  `none` = the
+    budget was blown somewhere below `n`; failures are not memoised. -/
+partial def toANF (dag : DAG) (memo : ANFMemo) (n : NodeId) : ANFMemo × Option ANF :=
   match memo[n]? with
-  | some a => (memo, a)
+  | some a => (memo, some a)
   | none   =>
-    let (memo, a) := match dag.kind? n with
-      | some (NodeKind.constVal false) => (memo, ({} : HashMap String (Array NodeId)))
-      | some (NodeKind.constVal true)  =>
-        (memo, (({} : HashMap String (Array NodeId)).insert "" #[]))
-      | some (NodeKind.leaf _) =>
-        (memo, (({} : HashMap String (Array NodeId)).insert (monoKey #[n]) #[n]))
+    let (memo, a?) := match dag.kind? n with
+      | some (NodeKind.constVal false) => (memo, some ({} : ANF))
+      | some (NodeKind.constVal true)  => (memo, some (({} : ANF).insert #[] ()))
+      | some (NodeKind.leaf _)         => (memo, some (({} : ANF).insert #[n] ()))
       | some (NodeKind.xorNode ch) =>
-        ch.foldl (fun (m, acc) c =>
-          let (m, ac) := toANF dag m c
-          (m, anfXor acc ac)) (memo, ({} : HashMap String (Array NodeId)))
+        ch.foldl (fun (m, acc?) c =>
+          match acc? with
+          | none     => (m, none)
+          | some acc =>
+            match toANF dag m c with
+            | (m, none)    => (m, none)
+            | (m, some ac) => (m, anfXor acc ac))
+          (memo, some ({} : ANF))
       | some (NodeKind.andNode ch) =>
-        ch.foldl (fun (m, acc) c =>
-          let (m, ac) := toANF dag m c
-          (m, anfAnd acc ac)) (memo, (({} : HashMap String (Array NodeId)).insert "" #[]))
-      | _ => (memo, ({} : HashMap String (Array NodeId)))
-    (memo.insert n a, a)
+        ch.foldl (fun (m, acc?) c =>
+          match acc? with
+          | none     => (m, none)
+          | some acc =>
+            match toANF dag m c with
+            | (m, none)    => (m, none)
+            | (m, some ac) => (m, anfAnd acc ac))
+          (memo, some (({} : ANF).insert #[] ()))
+      | _ => (memo, some ({} : ANF))
+    match a? with
+    | some a => (memo.insert n a, some a)
+    | none   => (memo, none)
 
-/-- Exact secret-freeness via ANF: `w` is secret-free iff no surviving monomial of
-    its ANF contains a `Secret` leaf.  Sound *and* complete (ANF is the canonical
-    F2 form), so this catches the product-cancellations the syntactic
-    `tupleHasSecret` misses. -/
+/-- Exact secret-freeness via ANF, threading the NodeId→ANF memo (candidates in
+    one extension share most of their sub-DAG, so share the memo too).
+    `w` is secret-free iff no surviving monomial of its ANF contains a `Secret`
+    leaf — sound *and* complete up to the budget (ANF is the canonical F2 form);
+    a blown budget REJECTS (sound: only extension yield is lost). -/
+def anfSecretFreeM (dag : DAG) (memo : ANFMemo) (w : NodeId) : ANFMemo × Bool :=
+  match toANF dag memo w with
+  | (memo, none)     => (memo, false)
+  | (memo, some anf) =>
+    (memo, anf.fold (fun free m _ => free && !m.any dag.isSecretNode) true)
+
+/-- Memo-less convenience wrapper (demos/tests). -/
 def anfSecretFree (dag : DAG) (w : NodeId) : Bool :=
-  let (_, anf) := toANF dag ({} : HashMap NodeId (HashMap String (Array NodeId))) w
-  anf.fold (fun free _ m => free && !m.any (fun id => dag.isSecretNode id)) true
+  (anfSecretFreeM dag ({} : ANFMemo) w).2
 
 /-- **Coupling-driven probe-set extension.**  Given the coupling `T` and the
     candidate observations `(name, node)`, return the names whose `w∘T` is
@@ -757,38 +785,58 @@ def anfSecretFree (dag : DAG) (w : NodeId) : Bool :=
       1. PIT fast-reject — a bit-sliced F2 identity test on the coupled env; a lane
          disagreement means genuine secret-dependence (sound to reject).
       2. syntactic `substNode`+`tupleHasSecret` (XOR-canonicalisation only);
-      3. ANF fallback (`anfSecretFree`) — exact, catches the product-cancellations
-         phase 2 misses.  Acceptance never rests on the probabilistic PIT. -/
+      3. ANF fallback (`anfSecretFreeM`) — exact, catches the product-cancellations
+         phase 2 misses; a blown monomial budget rejects (sound).  Acceptance
+         never rests on the probabilistic PIT. -/
 def couplingExtend (g : GlobalDAG) (coupling : Array (NodeId × NodeId))
     (chosen : Array String) (candidates : Array (String × NodeId))
-    : GlobalDAG × Array String × Nat :=
+    : GlobalDAG × Array String × Nat := Id.run do
   let chosenSet : HashMap String Unit := chosen.foldl (fun m w => m.insert w ()) {}
-  let envRandFinal := evalCoupledEnv g.dag coupling (mkEnv g.dag false)
-  let envZeroFinal := evalCoupledEnv g.dag coupling (mkEnv g.dag true)
-  let (g, blinded, anfCount) := candidates.foldl (fun (acc : GlobalDAG × Array String × Nat) c =>
-    let (g, keep, anfCount) := acc
-    if chosenSet.contains c.1 then (g, keep.push c.1, anfCount)
+  let envRand := evalCoupledEnv g.dag coupling (mkEnv g.dag false)
+  let envZero := evalCoupledEnv g.dag coupling (mkEnv g.dag true)
+  -- Phase 1: PIT fast-reject.  A lane disagreement between secrets-random and
+  -- secrets-zero witnesses genuine secret-dependence, so rejecting is sound
+  -- (it can only cost yield if the env is imperfect, never admit a bad wire).
+  -- The two envs are fixed across candidates, so each env's eval cache is built
+  -- once and shared: work done for one candidate's sub-DAG serves all others.
+  let mut cacheR : Array (Option UInt64) := Array.replicate g.dag.nextId none
+  let mut cacheZ : Array (Option UInt64) := Array.replicate g.dag.nextId none
+  let mut keep : Array String := #[]
+  let mut survivors : Array (String × NodeId) := #[]
+  for c in candidates do
+    if chosenSet.contains c.1 then
+      keep := keep.push c.1
     else
-      -- Phase 1: PIT fast-reject.  A lane disagreement between secrets-random and
-      -- secrets-zero witnesses genuine secret-dependence, so rejecting is sound
-      -- (it can only cost yield if the env is imperfect, never admit a bad wire).
-      let (_, valRand) := evalNode g.dag envRandFinal c.2 ((List.replicate g.dag.nextId none).toArray)
-      let (_, valZero) := evalNode g.dag envZeroFinal c.2 ((List.replicate g.dag.nextId none).toArray)
-      if valRand != valZero then
-        (g, keep, anfCount)
-      else
-        -- Acceptance is EXACT.  Apply T (`w' = w∘T`), then:
-        --   Phase 2: syntactic `tupleHasSecret` (fast, XOR-canonicalisation only);
-        --   Phase 3: ANF fallback (exact, catches product-cancellations Phase 2 misses).
-        let (g, w') := coupling.foldl
-          (fun (st : GlobalDAG × NodeId) rt =>
-            let (g, cur) := st
-            let (g, _, cur') := substNode g rt.1 rt.2 ({} : HashMap NodeId NodeId) cur
-            (g, cur'))
-          (g, c.2)
-        if !tupleHasSecret g.dag #[w'] then (g, keep.push c.1, anfCount)
-        else if anfSecretFree g.dag w' then (g, keep.push c.1, anfCount + 1)
-        else (g, keep, anfCount)) (g, #[], 0)
-  (g, blinded, anfCount)
+      let (cR, vR) := evalNode g.dag envRand c.2 cacheR
+      let (cZ, vZ) := evalNode g.dag envZero c.2 cacheZ
+      cacheR := cR
+      cacheZ := cZ
+      if vR == vZ then
+        survivors := survivors.push c
+  -- Acceptance is EXACT.  Apply T to *all* survivors at once — one shared
+  -- `substNode` memo per coupling step (`substTuple`), instead of replaying the
+  -- whole coupling per candidate with fresh memos — then per image:
+  --   Phase 2: syntactic `tupleHasSecret` (fast, XOR-canonicalisation only);
+  --   Phase 3: ANF fallback (exact, catches product-cancellations Phase 2
+  --   misses); its NodeId→ANF memo is shared across survivors.
+  let mut g := g
+  let mut roots : Array NodeId := survivors.map (·.2)
+  for rt in coupling do
+    let (g', roots') := substTuple g roots rt.1 rt.2
+    g := g'
+    roots := roots'
+  let mut anfMemo : ANFMemo := {}
+  let mut anfCount : Nat := 0
+  for i in [0:survivors.size] do
+    let w' := roots[i]!
+    if !tupleHasSecret g.dag #[w'] then
+      keep := keep.push survivors[i]!.1
+    else
+      let (m, free) := anfSecretFreeM g.dag anfMemo w'
+      anfMemo := m
+      if free then
+        keep := keep.push survivors[i]!.1
+        anfCount := anfCount + 1
+  return (g, keep, anfCount)
 
 end verif
