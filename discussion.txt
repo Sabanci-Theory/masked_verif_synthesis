@@ -6,40 +6,64 @@ Discuss:
         - X -> h1, h2, h3
         - MD5(X ++ h1 ++ h2 ++ h3) -- use a fast hashing algorithm
 
-    * Tracking reference counts (specifically references from `xorNode`s) and storing the IDs of random variables somewhere
-        - turns the query of standalone XOR'ed random variables into O(|random variables|) time
-    + this is now implemented
-    
-    * Rewrite order heuristic in maskVerif is to rewrite the random variable with the least multiplicative depth. This is a
-      reasonable heuristic, but I have another: rewrite the random whose XOR parent has the most children.
-
-    * Realized negatives:
-        - after factoring, nodes that were moved out of place become semantically redundant (they are now unreachable from roots),
-          but references pointing at them are kept in HashMaps, burdening the memory. if reference counting is implemented, this
-          can be worked around but that would increase the complexity of factoring and many other procedures (even reference
-          rounting is not exactly a solution)
-
-        - the global DAG grows with each probe, and there is not just a memory question but also a computation question. it is
-          usually the case that some of the nodes are factored over and over again. if we could memoize the resulting factoring
-          for some of the nodes we can evade redundant computations.
-
-        - after the DFS worker does its job we do not necessarily require to run `gdag.dag.randoms.fiter`. it is not super cheap
-          and we could have filled in the `todo` while the DFS worker is running.
-
-        - in the DFSState we do not really need to have two hash maps for the parents, we can just have `HashMap NodeId (Nat x Nat)`
-
-        - a similar redundant computation to factoring happens with the DFS worker as well, we can cache parent information for
-          nodes. probably.
-
-        - partial functions are not nice
-
-        = flattening, in practice, loses information about cables. is this problematic?
-        + yes it is, but we can work around it
+    * we do not have degree 2 completeness.
+        - here is a counterexample: f(s, r_1, r_2, r_3, r_4) = s * r_1 + r_1 * r_2 + r_3 * r_4
 
 = is there a difference between factoring from top-to-bottom and bottom-to-top?
 + yes there is, but for our purposes it is not clear if one has an edge over the other.
 
 = some more documentation is needed
-+ source code is thoroughly documented, a README is on its way
 
 = rewrites first and then factoring, probably
+
+Note to self:
+          rewriting is confluent
+          completeness attained only in linear/affine cases
+
+Gemini's critique for the code:
+===============================
+### 1. The "Per-Probe" Factoring Trap (Critical Time Leak)
+
+Currently, `initProbe` calls `gdag.dag.factor origRoots`. This means you are dynamically running the factoring algorithm *inside* the
+exponential probe loop. 
+
+**The Problem:** Factoring involves deep DAG traversals, frequency counting, and interning new nodes. Doing this repeatedly for the exact
+same circuit sub-graphs across different probe combinations is a massive duplication of work. 
+
+
+### 2. Dense Arrays vs. HashMaps (Critical Time & Memory Leak)
+
+Your `DFSState` and `ProbeState` heavily rely on `Std.Data.HashMap NodeId Nat` for `xorParCount`, `totalParCount`, and `parents`.
+
+**The Problem:** HashMaps are great for sparse, arbitrary keys. But your `NodeId` is explicitly defined as `Nat` and increments linearly
+(`nextId := id + 1`). This means your IDs are perfectly dense and contiguous. Allocating, hashing, and traversing HashMaps inside an
+exponential loop is incredibly slow and fragments memory.
+
+**The Fix:** Replace `HashMap NodeId X` in your probe state with dense `Array X`, where the index *is* the `NodeId`. Array lookups/updates
+are $\mathcal{O}(1)$ pointer offsets. For a graph of 10,000 nodes, pre-allocating an `Array Nat` of size 10,000 and cloning it per probe is
+exponentially faster than rebuilding HashMaps.
+
+
+### 4. $\mathcal{O}(n^2)$ Node Constructors (Time Leak)
+
+Look at `xorInsert` and `andInsert`. They use binary search to find the index, but then call `arr.insertIdx!` or `arr.eraseIdx!`.
+
+**The Problem:** `insertIdx!` and `eraseIdx!` shift all subsequent elements in the array memory. Because you call these inside a `foldl` over
+children (in `flattenXor` and `flattenAnd`), building a node with $N$ children takes $\mathcal{O}(N^2)$ time. 
+
+**The Fix:** For small arrays (2-4 children), this is fine. For larger flattened arrays, it is much faster to push everything to an array,
+run standard `Array.qsort`, and then do a single $\mathcal{O}(N)$ pass to remove duplicates (or apply $\mathbb{F}_2$ cancellations).
+
+
+### 5. Parent Array Filtering in `decrementParent` (Time/Garbage Leak)
+
+When a node is rewritten, `decrementParent` removes the rewritten node from the parent lists of its siblings using:
+`acc.parents.insert cid (((acc.parents[cid]?).getD #[]).filter (· != nodeId))`
+
+**The Problem:** `Array.filter` allocates a brand new array every time it is called. Doing this deep within the rewrite recursion creates an
+enormous amount of garbage collection pressure.
+
+**The Fix:** Instead of reallocating arrays, consider a "lazy deletion" approach. Just keep a `HashSet NodeId` (or a flat boolean `Array Bool`
+indexed by `NodeId`) of `deletedEdges` or `rewrittenNodes`. When iterating over parents later, just skip any IDs marked as deleted.
+ 
+===============================
