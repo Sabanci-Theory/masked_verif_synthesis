@@ -1,5 +1,4 @@
-import Verif.«n-aryDAG»
-import Verif.Rewrite
+import Verif.Coupling
 import Std.Data.HashMap
 
 namespace verif
