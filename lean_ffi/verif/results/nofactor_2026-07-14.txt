@@ -1,0 +1,38 @@
+=== Factoring ablation (both runs coupling-extended) ===
+ISW AND (2 shares) @ order 1:  factoring secure (0 ms)  |  no factoring secure (1 ms)
+ISW AND (3 shares) @ order 2:  factoring secure (2 ms)  |  no factoring secure (2 ms)
+ISW AND (4 shares) @ order 3:  factoring secure (47 ms)  |  no factoring secure (34 ms)
+ISW AND (5 shares) @ order 4:  factoring secure (1166 ms)  |  no factoring secure (835 ms)
+DOM AND (2 shares) @ order 1:  factoring secure (1 ms)  |  no factoring secure (0 ms)
+DOM AND (3 shares) @ order 2:  factoring secure (6 ms)  |  no factoring secure (3 ms)
+DOM AND (4 shares) @ order 3:  factoring secure (105 ms)  |  no factoring secure (80 ms)
+Trichina AND @ order 1:  factoring secure (0 ms)  |  no factoring secure (0 ms)
+Trichina AND (bad assoc) @ order 1:  factoring INSECURE (1 ms)  |  no factoring INSECURE (0 ms)
+TI AND (3 shares) @ order 1:  factoring secure (1 ms)  |  no factoring secure (0 ms)
+Additive refresh (3 shares) @ order 2:  factoring secure (0 ms)  |  no factoring secure (0 ms)
+Additive refresh (4 shares) @ order 3:  factoring secure (1 ms)  |  no factoring secure (0 ms)
+ISW refresh (3 shares) @ order 2:  factoring secure (0 ms)  |  no factoring secure (0 ms)
+ISW refresh (4 shares) @ order 3:  factoring secure (0 ms)  |  no factoring secure (1 ms)
+DOM Keccak χ (2 shares) @ order 1:  factoring secure (14 ms)  |  no factoring secure (10 ms)
+DOM Keccak χ (3 shares) @ order 2:  factoring secure (2850 ms)  |  no factoring secure (2264 ms)
+TI Keccak χ (3 shares) @ order 1:  factoring secure (22 ms)  |  no factoring secure (14 ms)
+Q⁴₁₂ (2-share direct) @ order 1:  factoring secure (2 ms)  |  no factoring INSECURE (2 ms)   <-- LOST without factoring
+Q⁴₁₂ TI (3 shares) @ order 1:  factoring secure (5 ms)  |  no factoring secure (3 ms)
+TI Fides AB1 5-bit S-box (4 shares) @ order 1:  factoring secure (1840 ms)  |  no factoring secure (795 ms)
+x+yz TI direct (3 shares) @ order 1:  factoring secure (0 ms)  |  no factoring secure (1 ms)
+x+yz TI with CT (3 shares) @ order 1:  factoring secure (1 ms)  |  no factoring secure (0 ms)
+x+yz TI (4 shares) @ order 2:  factoring secure (11 ms)  |  no factoring secure (7 ms)
+x+yz+xyz TI (4 shares) @ order 1:  factoring secure (44 ms)  |  no factoring secure (16 ms)
+xy TI, virtual variable @ order 1:  factoring secure (3 ms)  |  no factoring secure (0 ms)
+xy TI, virtual share @ order 1:  factoring secure (2 ms)  |  no factoring secure (0 ms)
+xy TI, 4→3 shares @ order 1:  factoring secure (1 ms)  |  no factoring secure (1 ms)
+--- d+1 quadratic S-box family (randomness-free compression) ---
+Q³₁ d+1 (Toffoli-style) @ order 1:  factoring secure (0 ms)  |  no factoring secure (1 ms)
+Q³₂ d+1 (quadratic feedback) @ order 1:  factoring secure (2 ms)  |  no factoring INSECURE (1 ms)   <-- LOST without factoring
+Q³₃ d+1 (genuinely insecure) @ order 1:  factoring INSECURE (3 ms)  |  no factoring INSECURE (2 ms)
+Q⁴₄ d+1 (Toffoli) @ order 1:  factoring secure (1 ms)  |  no factoring secure (0 ms)
+Q⁴₁₂ d+1 (generated) @ order 1:  factoring secure (3 ms)  |  no factoring INSECURE (1 ms)   <-- LOST without factoring
+Q⁴₂₉₃ d+1 (quadratic feedback) @ order 1:  factoring secure (3 ms)  |  no factoring INSECURE (2 ms)   <-- LOST without factoring
+Q⁴₂₉₄ d+1 (Toffoli-style) @ order 1:  factoring secure (2 ms)  |  no factoring secure (1 ms)
+Q⁴₂₉₉ d+1 (feedback ×3 coords) @ order 1:  factoring secure (5 ms)  |  no factoring INSECURE (2 ms)   <-- LOST without factoring
+Q⁴₃₀₀ d+1 (genuinely insecure) @ order 1:  factoring INSECURE (4 ms)  |  no factoring INSECURE (2 ms)

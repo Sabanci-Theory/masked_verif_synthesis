@@ -1,0 +1,111 @@
+=== d+1 quadratic S-box family on replay-witness ===
+Q³₁ d+1 (Toffoli-style) @ order 1:  replay secure
+    coupling     : 1 ms
+  total discharges       : 13
+  distinct probe sets    : 13
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct closures      : 6
+  repeated closures      : 0
+  successful main probes : 6
+  free wires (sum)       : 11
+  free wires (avg/main)  : 1.833333
+
+Q³₂ d+1 (quadratic feedback) @ order 1:  replay INSECURE
+    coupling     : 2 ms
+  total discharges       : 24
+  distinct probe sets    : 24
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct closures      : 11
+  repeated closures      : 0
+  successful main probes : 11
+  free wires (sum)       : 13
+  free wires (avg/main)  : 1.181818
+
+Q³₃ d+1 (genuinely insecure) @ order 1:  replay INSECURE
+    coupling     : 3 ms
+  total discharges       : 18
+  distinct probe sets    : 18
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct closures      : 8
+  repeated closures      : 0
+  successful main probes : 8
+  free wires (sum)       : 22
+  free wires (avg/main)  : 2.750000
+
+Q⁴₄ d+1 (Toffoli) @ order 1:  replay secure
+    coupling     : 0 ms
+  total discharges       : 15
+  distinct probe sets    : 15
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct closures      : 7
+  repeated closures      : 0
+  successful main probes : 7
+  free wires (sum)       : 14
+  free wires (avg/main)  : 2.000000
+
+Q⁴₁₂ d+1 (generated) @ order 1:  replay INSECURE
+    coupling     : 2 ms
+  total discharges       : 24
+  distinct probe sets    : 24
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct closures      : 11
+  repeated closures      : 0
+  successful main probes : 11
+  free wires (sum)       : 15
+  free wires (avg/main)  : 1.363636
+
+Q⁴₂₉₃ d+1 (quadratic feedback) @ order 1:  replay INSECURE
+    coupling     : 2 ms
+  total discharges       : 24
+  distinct probe sets    : 24
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct closures      : 11
+  repeated closures      : 0
+  successful main probes : 11
+  free wires (sum)       : 20
+  free wires (avg/main)  : 1.818182
+
+Q⁴₂₉₄ d+1 (Toffoli-style) @ order 1:  replay secure
+    coupling     : 1 ms
+  total discharges       : 23
+  distinct probe sets    : 23
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct closures      : 11
+  repeated closures      : 0
+  successful main probes : 11
+  free wires (sum)       : 16
+  free wires (avg/main)  : 1.454545
+
+Q⁴₂₉₉ d+1 (feedback ×3 coords) @ order 1:  replay INSECURE
+    coupling     : 2 ms
+  total discharges       : 18
+  distinct probe sets    : 18
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct closures      : 8
+  repeated closures      : 0
+  successful main probes : 8
+  free wires (sum)       : 22
+  free wires (avg/main)  : 2.750000
+
+Q⁴₃₀₀ d+1 (genuinely insecure) @ order 1:  replay INSECURE
+    coupling     : 2 ms
+  total discharges       : 18
+  distinct probe sets    : 18
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct closures      : 8
+  repeated closures      : 0
+  successful main probes : 8
+  free wires (sum)       : 24
+  free wires (avg/main)  : 3.000000
+
+Q⁴₁₂ (2-share direct, hand-written) @ order 1:  replay INSECURE
+    coupling     : 2 ms
+  total discharges       : 26
+  distinct probe sets    : 26
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct closures      : 12
+  repeated closures      : 0
+  successful main probes : 12
+  free wires (sum)       : 16
+  free wires (avg/main)  : 1.333333
+

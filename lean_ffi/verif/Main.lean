@@ -71,26 +71,59 @@ def addSecretShares1 (g : GlobalDAG) (pre : String) (sec : String) (shares : Nat
       i < j:  r_ij fresh;  r_ji := (r_ij + a_i·b_j) + a_j·b_i
       c_i := a_i·b_i + Σ_{j≠i} r_ij       (2-ary chain, ascending j)
     An n-share instance is expected (n-1)-probing secure. -/
+/-- Core ISW multiplication layer over already-declared share wires `aSh`/`bSh`
+    (body wires and fresh randoms prefixed with `pre`); returns the output share
+    wire names.  With `pre := ""` this is the plain `iswAND` body; the
+    depth-scaling chain instantiates it once per stage. -/
+def iswANDCore (g : GlobalDAG) (pre : String) (aSh bSh : Array String)
+    : GlobalDAG × Array String := Id.run do
+  let n := aSh.size
+  let mut g := g
+  -- all n² partial products
+  for i in [0:n] do
+    for j in [0:n] do
+      g := g.addWireAnd s!"{pre}p{i}{j}" #[.wire aSh[i]!, .wire bSh[j]!]
+  -- r_ji = (r_ij + a_i b_j) + a_j b_i   (association per Alg. 7)
+  for i in [0:n] do
+    for j in [i+1:n] do
+      g := g.addWireXor s!"{pre}t{i}{j}" #[.leaf (.Random s!"{pre}r{i}{j}"), .wire s!"{pre}p{i}{j}"]
+      g := g.addWireXor s!"{pre}s{j}{i}" #[.wire s!"{pre}t{i}{j}", .wire s!"{pre}p{j}{i}"]
+  -- c_i = a_i b_i + Σ_{j≠i} r_ij
+  let mut outs : Array String := #[]
+  for i in [0:n] do
+    let mut terms : Array WireInput := #[.wire s!"{pre}p{i}{i}"]
+    for j in [0:n] do
+      if j != i then
+        terms := terms.push (if i < j then .leaf (.Random s!"{pre}r{i}{j}") else .wire s!"{pre}s{i}{j}")
+    g := addWireXorChain g s!"{pre}c{i}" terms
+    outs := outs.push s!"{pre}c{i}"
+  return (g, outs)
+
 def iswAND (shares : Nat) : GlobalDAG := Id.run do
   let mut g : GlobalDAG := {}
   for (pre, sec) in #[("a", "a"), ("b", "b")] do
     g := addSecretShares g pre sec shares
-  -- all n² partial products
-  for i in [0:shares] do
-    for j in [0:shares] do
-      g := g.addWireAnd s!"p{i}{j}" #[.wire s!"a{i}", .wire s!"b{j}"]
-  -- r_ji = (r_ij + a_i b_j) + a_j b_i   (association per Alg. 7)
-  for i in [0:shares] do
-    for j in [i+1:shares] do
-      g := g.addWireXor s!"t{i}{j}" #[.leaf (.Random s!"r{i}{j}"), .wire s!"p{i}{j}"]
-      g := g.addWireXor s!"s{j}{i}" #[.wire s!"t{i}{j}", .wire s!"p{j}{i}"]
-  -- c_i = a_i b_i + Σ_{j≠i} r_ij
-  for i in [0:shares] do
-    let mut terms : Array WireInput := #[.wire s!"p{i}{i}"]
-    for j in [0:shares] do
-      if j != i then
-        terms := terms.push (if i < j then .leaf (.Random s!"r{i}{j}") else .wire s!"s{i}{j}")
-    g := addWireXorChain g s!"c{i}" terms
+  let aSh := (Array.range shares).map (fun i => s!"a{i}")
+  let bSh := (Array.range shares).map (fun i => s!"b{i}")
+  (iswANDCore g "" aSh bSh).1
+
+/-! ### Depth-scaling chain of ISW-ANDs
+
+    y⁽¹⁾ = x⁽⁰⁾·x⁽¹⁾,  y⁽ᵏ⁾ = y⁽ᵏ⁻¹⁾·x⁽ᵏ⁾ — `len` cascaded ISW-ANDs, each with
+    its own fresh randomness, each intermediate sharing feeding exactly one
+    successor gadget.  ISW multiplication is SNI, so the chain is expected
+    (shares-1)-probing secure at every length; circuit size and multiplicative
+    depth grow linearly in `len`, giving the verification-time scaling curve. -/
+def iswAndChain (shares len : Nat) : GlobalDAG := Id.run do
+  let mut g : GlobalDAG := {}
+  for k in [0:len+1] do
+    g := addSecretShares g s!"x{k}_" s!"x{k}" shares
+  let mut cur := (Array.range shares).map (fun i => s!"x0_{i}")
+  for k in [1:len+1] do
+    let xs := (Array.range shares).map (fun i => s!"x{k}_{i}")
+    let (g2, outs) := iswANDCore g s!"g{k}_" cur xs
+    g := g2
+    cur := outs
   return g
 
 /-! ### DOM-independent AND, parameterized ([GMK16]; "DOM AND" in [BBC+19])
@@ -386,6 +419,110 @@ def q12TI : GlobalDAG := Id.run do
   let g' := addWireXorChain g' "Z2" #[.wire "c1", .wire "wa33", .wire "wa31", .wire "wa13"]
   let g' := addWireXorChain g' "Z3" #[.wire "c2", .wire "wa11", .wire "wa12", .wire "wa21"]
   return g'
+
+
+/-! ### d+1 quadratic S-box family: 2-share expanded direct sharing with
+    share compression (the structure of `q_12`, generated for all quadratic
+    permutation classes of [BNN+15])
+
+    First-order d+1 masking of an S-box in the style of Reparaz et al.
+    (CRYPTO'15) / De Cnudde et al. (CHES'16), but with **randomness-free
+    compression**: cross-share products `P = v_u,i · v_w,j`, per-(i,j)
+    non-complete partial sums `o_k,ij` (linear share i folded into the
+    diagonal cells), and compression wires `ob_k,i = o_k,i1 + o_k,i2`.
+    The compression wire computes `Σ_m u_i·w + (linear shares)` — the share
+    sums telescope their randomness only under the common factor `u_i`, so
+    certifying it requires the factoring rewrite  u_i·w_1 + u_i·w_2 → u_i·w
+    whenever no fresh linear blinder remains in the coordinate.
+
+    Predicted split (confirmed by an external brute-force first-order check of
+    every wire, `tools/gen_dplus1.py`):
+    - coordinates with a fresh linear variable (Toffoli-style, e.g. `d + ab`)
+      verify without factoring;
+    - coordinates with quadratic feedback (every linear variable also occurs in
+      a monomial, e.g. `c + ab + ac`) are secure but certifiable only with
+      factoring — maskVerif-style rewriting reports a false INSECURE;
+    - coordinates with no linear part (`ab+ac+bc` in Q³₃/Q⁴₃₀₀) are genuinely
+      1-probing INSECURE — precisely the two classes with no uniform 3-share
+      TI ([BNN+15] Corollaries 1–2). -/
+def dPlusOneQuadSbox (nvars : Nat) (coords : Array (Array Nat × Array (Nat × Nat))) : GlobalDAG := Id.run do
+  let mut g : GlobalDAG := {}
+  -- 2 shares per input: v{a}1 = secret + r_a, v{a}2 = r_a  (as in q_12)
+  for a in [0:nvars] do
+    g := g.addShare s!"v{a}1" #[.leaf (.Secret s!"v{a}"), .leaf (.Random s!"r{a}")]
+    g := g.addShare s!"v{a}2" #[.leaf (.Random s!"r{a}")]
+  for k in [0:coords.size] do
+    let (lin, quad) := coords[k]!
+    -- cross-share products (idempotent adds dedupe across coordinates)
+    for (u, w) in quad do
+      for i in [1:3] do
+        for j in [1:3] do
+          g := g.addWireAnd s!"P{u}_{i}_{w}_{j}" #[.wire s!"v{u}{i}", .wire s!"v{w}{j}"]
+    -- non-complete cells o_k,ij, then compression along j
+    let mut rows : Array (Array WireInput) := #[#[], #[]]
+    for i in [1:3] do
+      for j in [1:3] do
+        let mut terms : Array WireInput := #[]
+        for (u, w) in quad do
+          terms := terms.push (.wire s!"P{u}_{i}_{w}_{j}")
+        if i == j then
+          for w in lin do
+            terms := terms.push (.wire s!"v{w}{i}")
+        if terms.size > 0 then
+          g := addWireXorChain g s!"o{k}_{i}{j}" terms
+          rows := rows.set! (i-1) (rows[i-1]!.push (.wire s!"o{k}_{i}{j}"))
+    for i in [1:3] do
+      if rows[i-1]!.size > 0 then
+        g := addWireXorChain g s!"ob{k}_{i}" rows[i-1]!
+  return g
+
+/-- Q³₁ = (a, b, c+ab) — Toffoli; fresh linear blinder in every coordinate. -/
+def q31d1 : GlobalDAG := dPlusOneQuadSbox 3 #[
+  (#[0], #[]), (#[1], #[]), (#[2], #[(0, 1)])]
+
+/-- Q³₂ = (a, b+ac, c+ab+ac) — quadratic feedback in coordinate 3. -/
+def q32d1 : GlobalDAG := dPlusOneQuadSbox 3 #[
+  (#[0], #[]), (#[1], #[(0, 2)]), (#[2], #[(0, 1), (0, 2)])]
+
+/-- Q³₃ = (ab+ac+bc, a+b+ab+bc, a+c+bc) — coordinate 1 has no linear part:
+    genuinely 1-probing INSECURE in this 2-share form (and the class has no
+    uniform 3-share TI, [BNN+15] Cor. 1). -/
+def q33d1 : GlobalDAG := dPlusOneQuadSbox 3 #[
+  (#[], #[(0, 1), (0, 2), (1, 2)]),
+  (#[0, 1], #[(0, 1), (1, 2)]),
+  (#[0, 2], #[(1, 2)])]
+
+/-- Q⁴₄ = (a, b, c, d+ab) — the Toffoli gate. -/
+def q44d1 : GlobalDAG := dPlusOneQuadSbox 4 #[
+  (#[0], #[]), (#[1], #[]), (#[2], #[]), (#[3], #[(0, 1)])]
+
+/-- Q⁴₁₂ = (a, b+ac, c+ab+ac, d) — generated twin of the hand-written `q_12`. -/
+def q412d1 : GlobalDAG := dPlusOneQuadSbox 4 #[
+  (#[0], #[]), (#[1], #[(0, 2)]), (#[2], #[(0, 1), (0, 2)]), (#[3], #[])]
+
+/-- Q⁴₂₉₃ = (a, b+ac, c+ab+ac, d+bc). -/
+def q4293d1 : GlobalDAG := dPlusOneQuadSbox 4 #[
+  (#[0], #[]), (#[1], #[(0, 2)]), (#[2], #[(0, 1), (0, 2)]), (#[3], #[(1, 2)])]
+
+/-- Q⁴₂₉₄ = (a, b, c+ab, d+ac) — Toffoli-style throughout. -/
+def q4294d1 : GlobalDAG := dPlusOneQuadSbox 4 #[
+  (#[0], #[]), (#[1], #[]), (#[2], #[(0, 1)]), (#[3], #[(0, 2)])]
+
+/-- Q⁴₂₉₉ = (a, b+ab+ac, c+ab+ac+ad, d+ab+ad) — quadratic feedback in three
+    coordinates; the strongest factoring stress case in the family. -/
+def q4299d1 : GlobalDAG := dPlusOneQuadSbox 4 #[
+  (#[0], #[]),
+  (#[1], #[(0, 1), (0, 2)]),
+  (#[2], #[(0, 1), (0, 2), (0, 3)]),
+  (#[3], #[(0, 1), (0, 3)])]
+
+/-- Q⁴₃₀₀ = (ab+ac+bc, a+b+ab+bc, a+c+bc, d) — genuinely 1-probing INSECURE
+    (no linear part in coordinate 1; no uniform 3-share TI, [BNN+15] Cor. 2). -/
+def q4300d1 : GlobalDAG := dPlusOneQuadSbox 4 #[
+  (#[], #[(0, 1), (0, 2), (1, 2)]),
+  (#[0, 1], #[(0, 1), (1, 2)]),
+  (#[0, 2], #[(1, 2)]),
+  (#[3], #[])]
 
 
 /-! ## §4 TI sharings of quadratic/cubic functions ([BNN+15]) -/
@@ -754,6 +891,143 @@ def runAblation : IO Unit := do
   -- ppAblation "xy TI, virtual share" tiMultVirtualShare 1
   -- ppAblation "xy TI, 4→3 shares" tiMult43 1
 
+/-! ## Factoring ablation (`lake exe verif nofactor`)
+
+    Re-checks the suite with multiplicative factoring disabled throughout the
+    engine (`allowFactor := false`, coupling extension on in both runs).
+    Factoring only widens the certifiable class, so a flip is always
+    secure → false-INSECURE: the flipped rows are exactly the examples that
+    fall out of reach without factoring. -/
+def ppNoFactor (name : String) (g : GlobalDAG) (order : Nat) : IO Unit := do
+  let t0 ← IO.monoMsNow
+  let (_, _, resF, _) := checkDProbing g order true true
+  let t1 ← IO.monoMsNow
+  let (_, _, resN, _) := checkDProbing g order true false
+  let t2 ← IO.monoMsNow
+  let v := fun (r : CheckResult) => if r.isSecure then "secure" else "INSECURE"
+  let flip := if resF.isSecure && !resN.isSecure then "   <-- LOST without factoring" else ""
+  IO.println s!"{name} @ order {order}:  factoring {v resF} ({t1 - t0} ms)  |  no factoring {v resN} ({t2 - t1} ms){flip}"
+  (← IO.getStdout).flush
+
+def runNoFactorAblation : IO Unit := do
+  IO.println "=== Factoring ablation (both runs coupling-extended) ==="
+  ppNoFactor "ISW AND (2 shares)" (iswAND 2) 1
+  ppNoFactor "ISW AND (3 shares)" (iswAND 3) 2
+  ppNoFactor "ISW AND (4 shares)" (iswAND 4) 3
+  ppNoFactor "ISW AND (5 shares)" (iswAND 5) 4
+  ppNoFactor "DOM AND (2 shares)" (domAND 2) 1
+  ppNoFactor "DOM AND (3 shares)" (domAND 3) 2
+  ppNoFactor "DOM AND (4 shares)" (domAND 4) 3
+  ppNoFactor "Trichina AND" trichinaAND 1
+  ppNoFactor "Trichina AND (bad assoc)" trichinaANDBad 1
+  ppNoFactor "TI AND (3 shares)" tiAND 1
+  ppNoFactor "Additive refresh (3 shares)" (refreshAdd 3) 2
+  ppNoFactor "Additive refresh (4 shares)" (refreshAdd 4) 3
+  ppNoFactor "ISW refresh (3 shares)" (refreshISW 3) 2
+  ppNoFactor "ISW refresh (4 shares)" (refreshISW 4) 3
+  ppNoFactor "DOM Keccak χ (2 shares)" (domKeccakChi 2) 1
+  ppNoFactor "DOM Keccak χ (3 shares)" (domKeccakChi 3) 2
+  ppNoFactor "TI Keccak χ (3 shares)" tiKeccakChi 1
+  ppNoFactor "Q⁴₁₂ (2-share direct)" q_12 1
+  ppNoFactor "Q⁴₁₂ TI (3 shares)" q12TI 1
+  ppNoFactor "TI Fides AB1 5-bit S-box (4 shares)" tiFidesAB1 1
+  ppNoFactor "x+yz TI direct (3 shares)" tiXplusYZ3 1
+  ppNoFactor "x+yz TI with CT (3 shares)" tiXplusYZ3ct 1
+  ppNoFactor "x+yz TI (4 shares)" tiXplusYZ4 2
+  ppNoFactor "x+yz+xyz TI (4 shares)" tiCubic4 1
+  ppNoFactor "xy TI, virtual variable" tiMultVirtual 1
+  ppNoFactor "xy TI, virtual share" tiMultVirtualShare 1
+  ppNoFactor "xy TI, 4→3 shares" tiMult43 1
+  IO.println "--- d+1 quadratic S-box family (randomness-free compression) ---"
+  ppNoFactor "Q³₁ d+1 (Toffoli-style)" q31d1 1
+  ppNoFactor "Q³₂ d+1 (quadratic feedback)" q32d1 1
+  ppNoFactor "Q³₃ d+1 (genuinely insecure)" q33d1 1
+  ppNoFactor "Q⁴₄ d+1 (Toffoli)" q44d1 1
+  ppNoFactor "Q⁴₁₂ d+1 (generated)" q412d1 1
+  ppNoFactor "Q⁴₂₉₃ d+1 (quadratic feedback)" q4293d1 1
+  ppNoFactor "Q⁴₂₉₄ d+1 (Toffoli-style)" q4294d1 1
+  ppNoFactor "Q⁴₂₉₉ d+1 (feedback ×3 coords)" q4299d1 1
+  ppNoFactor "Q⁴₃₀₀ d+1 (genuinely insecure)" q4300d1 1
+
+/-! ## Extension-mode comparison (`lake exe verif compare`)
+
+    The canonical benchmark list for the three-branch comparison of the
+    probe-set extension mechanisms — (i) coupling (this branch),
+    (ii) witness replay (`replay-witness`), (iii) closures
+    (`closure-exploration`).  The same list is ported verbatim to worktrees of
+    the other two branches; each branch runs its own mechanism via its
+    `checkDProbing g order true`.  Extension mode only (the naive baseline is
+    mechanism-independent; see results/2026-07-12.txt for its numbers). -/
+def runCompare : IO Unit := do
+  IO.println "=== Extension-mode run (this branch's mechanism) ==="
+  ppAblation "ISW AND (2 shares)" (iswAND 2) 1
+  ppAblation "ISW AND (3 shares)" (iswAND 3) 2
+  ppAblation "ISW AND (4 shares)" (iswAND 4) 3
+  ppAblation "ISW AND (5 shares)" (iswAND 5) 4
+  ppAblation "DOM AND (2 shares)" (domAND 2) 1
+  ppAblation "DOM AND (2 shares) o2" (domAND 2) 2
+  ppAblation "DOM AND (3 shares)" (domAND 3) 2
+  ppAblation "DOM AND (4 shares)" (domAND 4) 3
+  ppAblation "Trichina AND" trichinaAND 1
+  ppAblation "Trichina AND (bad assoc)" trichinaANDBad 1
+  ppAblation "TI AND (3 shares)" tiAND 1
+  ppAblation "TI AND (3 shares) o2" tiAND 2
+  ppAblation "Additive refresh (3 shares)" (refreshAdd 3) 2
+  ppAblation "Additive refresh (4 shares)" (refreshAdd 4) 3
+  ppAblation "ISW refresh (3 shares)" (refreshISW 3) 2
+  ppAblation "ISW refresh (4 shares)" (refreshISW 4) 3
+  ppAblation "DOM Keccak χ (2 shares)" (domKeccakChi 2) 1
+  ppAblation "DOM Keccak χ (3 shares)" (domKeccakChi 3) 2
+  ppAblation "TI Keccak χ (3 shares)" tiKeccakChi 1
+  ppAblation "TI Keccak χ (3 shares) o2" tiKeccakChi 2
+  ppAblation "Q⁴₁₂ (2-share direct)" q_12 1
+  ppAblation "Q⁴₁₂ TI (3 shares)" q12TI 1
+  ppAblation "TI Fides AB1 (4 shares)" tiFidesAB1 1
+  ppAblation "x+yz TI direct (3 shares)" tiXplusYZ3 1
+  ppAblation "x+yz TI with CT (3 shares)" tiXplusYZ3ct 1
+  ppAblation "x+yz TI (4 shares)" tiXplusYZ4 2
+  ppAblation "x+yz TI (4 shares) o3" tiXplusYZ4 3
+  ppAblation "x+yz+xyz TI (4 shares)" tiCubic4 1
+  ppAblation "xy TI virtual variable" tiMultVirtual 1
+  ppAblation "xy TI virtual share" tiMultVirtualShare 1
+  ppAblation "xy TI 4to3 shares" tiMult43 1
+  ppAblation "Q31 d+1" q31d1 1
+  ppAblation "Q32 d+1" q32d1 1
+  ppAblation "Q33 d+1" q33d1 1
+  ppAblation "Q44 d+1" q44d1 1
+  ppAblation "Q412 d+1" q412d1 1
+  ppAblation "Q4293 d+1" q4293d1 1
+  ppAblation "Q4294 d+1" q4294d1 1
+  ppAblation "Q4299 d+1" q4299d1 1
+  ppAblation "Q4300 d+1" q4300d1 1
+
+/-! ## Depth-scaling run (`lake exe verif scaling`)
+
+    CSV: chain length vs verification time for `iswAndChain`, at 2 shares
+    (order 1) and 3 shares (order 2), coupling and naive columns. -/
+def ppScalingLine (shares len : Nat) : IO Unit := do
+  let g := iswAndChain shares len
+  let wireCount := g.circuit.wireOrder.size
+  let order := shares - 1
+  let t0 ← IO.monoMsNow
+  let (_, _, resC, _) := checkDProbing g order true
+  let t1 ← IO.monoMsNow
+  let (_, _, resN, _) := checkDProbing g order false
+  let t2 ← IO.monoMsNow
+  let v := fun (r : CheckResult) => if r.isSecure then "secure" else "INSECURE"
+  IO.println s!"{shares},{len},{wireCount},{t1 - t0},{t2 - t1},{v resC},{v resN}"
+  (← IO.getStdout).flush
+
+def runScaling : IO Unit := do
+  IO.println "shares,len,wires,couplingMs,naiveMs,verdictC,verdictN"
+  -- Verification time grows exponentially in chain length (≈ ×2.2 per stage at
+  -- 2 shares — the canonical form of a deep wire blows up with multiplicative
+  -- depth), so the ranges are capped where a step crosses ~1 min.
+  for len in [1:13] do
+    ppScalingLine 2 len
+  for len in [1:7] do
+    ppScalingLine 3 len
+
 /-
   stored output (pre-coupling closure ablation, kept for reference):
   7-share DOM-AND @ order 5:  verdict secure (agree=true)
@@ -763,7 +1037,11 @@ def runAblation : IO Unit := do
 
 end verif
 
-def main : IO Unit :=
-  verif.runAblation
+def main (args : List String) : IO Unit :=
+  match args with
+  | ["nofactor"] => verif.runNoFactorAblation
+  | ["scaling"]  => verif.runScaling
+  | ["compare"]  => verif.runCompare
+  | _            => verif.runAblation
 
 -- #eval main
