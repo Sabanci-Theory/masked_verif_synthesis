@@ -371,7 +371,8 @@ def findGeneralRandom (dag : DAG) (randoms : Array NodeId) (s : DFSState)
     resets `factored := false` (the new form is unfactored). -/
 partial def rewriteComplete (g : GlobalDAG) (tuple : Array NodeId)
     (used : HashMap NodeId Unit) (fuel : Nat) (factored : Bool)
-    (coupling : Array (NodeId × NodeId)) : GlobalDAG × Bool × Array (NodeId × NodeId) :=
+    (coupling : Array (NodeId × NodeId)) (allowFactor : Bool := true)
+    : GlobalDAG × Bool × Array (NodeId × NodeId) :=
   -- One DFS pass per round serves two purposes: it answers "is the tuple
   -- secret-free?" (no separate `tupleHasSecret` traversal — a secret survives iff
   -- it is a root or has a parent in the explored sub-DAG) and it feeds the finds.
@@ -390,19 +391,21 @@ partial def rewriteComplete (g : GlobalDAG) (tuple : Array NodeId)
     match findSimpleRandom tupleRandoms s rootSet with
     | some (r, x1) =>
       let (g, tuple') := substTuple g tuple r x1
-      rewriteComplete g tuple' used (fuel - 1) false (coupling.push (r, x1))
+      rewriteComplete g tuple' used (fuel - 1) false (coupling.push (r, x1)) allowFactor
     | none =>
       match findGeneralRandom g.dag tupleRandoms s rootSet used with
       | some (r, x1) =>
         let (g, tuple') := substTuple g tuple r x1
-        rewriteComplete g tuple' (used.insert r ()) (fuel - 1) false (coupling.push (r, x1))
+        rewriteComplete g tuple' (used.insert r ()) (fuel - 1) false (coupling.push (r, x1)) allowFactor
       | none =>
         -- Both finds stalled.  If the form is already factored, give up;
         -- otherwise factor (to expose product-buried randoms) and retry.
-        if factored then (g, false, coupling)
+        -- `allowFactor := false` (ablation) gives up here instead: strictly
+        -- more incomplete, may report false INSECURE, never false SECURE.
+        if factored || !allowFactor then (g, false, coupling)
         else
           let (dag, tuple') := g.dag.factor tuple
-          rewriteComplete { g with dag } tuple' used fuel true coupling
+          rewriteComplete { g with dag } tuple' used fuel true coupling allowFactor
 
 /-- Fuel budget for the complete loop: a generous multiple of the circuit's
     random count.  Termination is *argued* (each general step retires one random
@@ -415,8 +418,8 @@ def rewriteFuel (g : GlobalDAG) : Nat :=
 /-- Entry point for the complete checker on a tuple of observation roots.
     Returns the coupling `T` (ordered `(r, t)` substitutions) used to certify it. -/
 def checkProbeCompleteT (g : GlobalDAG) (tuple : Array NodeId)
-    : GlobalDAG × Bool × Array (NodeId × NodeId) :=
-  rewriteComplete g tuple {} (rewriteFuel g) false #[]
+    (allowFactor : Bool := true) : GlobalDAG × Bool × Array (NodeId × NodeId) :=
+  rewriteComplete g tuple {} (rewriteFuel g) false #[] allowFactor
 
 /-- Verdict-only probe check with lazy factoring:
     (1) reference-counted simple rule on the **unfactored** roots;
@@ -431,10 +434,15 @@ def checkProbeCompleteT (g : GlobalDAG) (tuple : Array NodeId)
     pairs would not be replayable by `substNode`/`evalCoupledEnv`.  Discharges
     that need the certifying coupling `T` for the extension must use
     `checkProbeCompleteT` directly (as `checkChosenCoupling` does). -/
-def checkProbeRoots (g : GlobalDAG) (rootIds : Array NodeId) : GlobalDAG × Bool :=
+def checkProbeRoots (g : GlobalDAG) (rootIds : Array NodeId)
+    (allowFactor : Bool := true) : GlobalDAG × Bool :=
   let (g, ps)       := initProbeByIds g rootIds
   let (g, ps, sec)  := rewriteLoop g ps
   if sec then (g, true)
+  else if !allowFactor then
+    -- Factoring disabled (ablation): skip tier 2, general loop without factoring.
+    let (g, sec3, _) := checkProbeCompleteT g rootIds false
+    (g, sec3)
   else
     let (dag, froots) := g.dag.factor ps.roots
     let g := { g with dag }

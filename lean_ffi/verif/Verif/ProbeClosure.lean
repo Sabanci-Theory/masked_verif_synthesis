@@ -186,13 +186,13 @@ def cleanWorklist (wl : ProbeWorklist) : ProbeWorklist :=
     DOM-AND) are not reported as false counterexamples. -/
 def checkProbeByNames (g : GlobalDAG) (fw : HashMap String NodeId)
     (stats : Stats) (kind : DischargeKind) (names : Array String)
-    : GlobalDAG × ProbeState × Bool × Stats :=
+    (allowFactor : Bool := true) : GlobalDAG × ProbeState × Bool × Stats :=
   let key := setKey names
   match stats.verdictCache[key]? with
   | some sec => (g, (default : ProbeState), sec, stats.recordHit kind)
   | none     =>
     let ids := wireNamesToIds fw names
-    let (g, sec) := checkProbeRoots g ids
+    let (g, sec) := checkProbeRoots g ids allowFactor
     (g, (default : ProbeState), sec, stats.recordMiss key sec)
 
 -- ============================================================
@@ -235,11 +235,11 @@ def candidatesOf (fw : HashMap String NodeId) (wires : Array String)
     so on a memo hit we cross-check: a disagreement means one engine has a
     soundness or completeness bug and must not be papered over. -/
 def checkChosenCoupling (g : GlobalDAG) (fw : HashMap String NodeId)
-    (stats : Stats) (names : Array String)
+    (stats : Stats) (names : Array String) (allowFactor : Bool := true)
     : GlobalDAG × Bool × Array (NodeId × NodeId) × Stats :=
   let key := setKey names
   let ids := wireNamesToIds fw names
-  let (g, sec, coupling) := checkProbeCompleteT g ids
+  let (g, sec, coupling) := checkProbeCompleteT g ids allowFactor
   let stats := match stats.verdictCache[key]? with
     | some cached =>
       if cached != sec then
@@ -259,18 +259,18 @@ mutual
 partial def checkAllSingle
     (g : GlobalDAG) (fw : HashMap String NodeId)
     (stats : Stats) (count : Nat) (wires : Array String) (extend : Bool)
-    : GlobalDAG × Stats × CheckResult :=
+    (allowFactor : Bool := true) : GlobalDAG × Stats × CheckResult :=
   if count == 0 then (g, stats, .Secure)
   else if wires.size < count then (g, stats, .Secure)
   else
     -- OptSampling union discharge.
-    let (g, _, allSec, stats) := checkProbeByNames g fw stats .union wires
+    let (g, _, allSec, stats) := checkProbeByNames g fw stats .union wires allowFactor
     if allSec then (g, stats, .Secure)
     else
       let wl0 : ProbeWorklist := #[{ count, wires }]
       -- Certify the representative tuple and capture its coupling `T`.
       let chosen := buildProbeSimple wl0
-      let (g, chosenSec, coupling, stats) := checkChosenCoupling g fw stats chosen
+      let (g, chosenSec, coupling, stats) := checkChosenCoupling g fw stats chosen allowFactor
       if !chosenSec then (g, stats, .Insecure chosen)
       else
         -- Grow the safe set: coupling extension (`extend`), or the naive baseline
@@ -285,7 +285,7 @@ partial def checkAllSingle
         let safeSet : HashMap String Unit :=
           safe.foldl (fun m w => m.insert w ()) {}
         let unsafeWires := wires.filter (fun w => !safeSet.contains w)
-        let (g, stats, r1) := checkAllSingle g fw stats count unsafeWires extend
+        let (g, stats, r1) := checkAllSingle g fw stats count unsafeWires extend allowFactor
         if !r1.isSecure then (g, stats, r1)
         else
           let safeWithinWires := wires.filter (fun w => safeSet.contains w)
@@ -295,7 +295,7 @@ partial def checkAllSingle
             else
               let (g, stats, ri) := checkAllMulti g fw stats
                 #[{ count := i,         wires := safeWithinWires },
-                  { count := count - i, wires := unsafeWires }] extend
+                  { count := count - i, wires := unsafeWires }] extend allowFactor
               if !ri.isSecure then (g, stats, ri)
               else doMixed g stats (i - 1)
           doMixed g stats (count - 1)
@@ -303,20 +303,20 @@ partial def checkAllSingle
 partial def checkAllMulti
     (g : GlobalDAG) (fw : HashMap String NodeId)
     (stats : Stats) (wl : ProbeWorklist) (extend : Bool)
-    : GlobalDAG × Stats × CheckResult :=
+    (allowFactor : Bool := true) : GlobalDAG × Stats × CheckResult :=
   if isWorklistVacuous wl then (g, stats, .Secure)
   else
     let wl := cleanWorklist wl
     if wl.isEmpty then (g, stats, .Secure)
     else if wl.size == 1 then
-      checkAllSingle g fw stats wl[0]!.count wl[0]!.wires extend
+      checkAllSingle g fw stats wl[0]!.count wl[0]!.wires extend allowFactor
     else
       let allWires := wl.foldl (fun acc f => acc ++ f.wires) #[]
-      let (g, _, allSec, stats) := checkProbeByNames g fw stats .union allWires
+      let (g, _, allSec, stats) := checkProbeByNames g fw stats .union allWires allowFactor
       if allSec then (g, stats, .Secure)
       else
         let chosen := buildProbeSimple wl
-        let (g, chosenSec, coupling, stats) := checkChosenCoupling g fw stats chosen
+        let (g, chosenSec, coupling, stats) := checkChosenCoupling g fw stats chosen allowFactor
         if !chosenSec then (g, stats, .Insecure chosen)
         else
           -- Grow the safe set: coupling extension (`extend`), or the naive baseline.
@@ -339,7 +339,7 @@ partial def checkAllMulti
               : GlobalDAG × Stats × CheckResult :=
             if idx >= wl.size then
               if allSafe then (g, stats, .Secure)        -- ⊆ safe set, already certified
-              else checkAllMulti g fw stats acc extend
+              else checkAllMulti g fw stats acc extend allowFactor
             else
               let f       := wl[idx]!
               let safeJ   := f.wires.filter (fun w => safeSet.contains w)
@@ -367,12 +367,17 @@ end
     extension to grow each certified probe set into its safe set; `extend := false`
     is the naive baseline that performs no extension (each representative covers
     only its own subsets), degrading the space-split toward exhaustive enumeration.
-    Both use the same sound rewrite checker, so the two verdicts must agree. -/
+    Both use the same sound rewrite checker, so the two verdicts must agree.
+
+    `allowFactor := false` disables multiplicative factoring throughout the
+    engine (ablation): strictly more incomplete — may report false INSECURE
+    (e.g. Q⁴₁₂ at order 1), never false SECURE. -/
 def checkDProbing (g : GlobalDAG) (probingOrder : Nat) (extend : Bool := true)
+    (allowFactor : Bool := true)
     : GlobalDAG × HashMap String NodeId × CheckResult × Stats :=
   let fw := g.wires
   let allWires := g.circuit.wireOrder
-  let (g, stats, res) := checkAllSingle g fw {} probingOrder allWires extend
+  let (g, stats, res) := checkAllSingle g fw {} probingOrder allWires extend allowFactor
   (g, fw, res, stats)
 
 def ppResult (res : CheckResult) (order : Nat) : String :=

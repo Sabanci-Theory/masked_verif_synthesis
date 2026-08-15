@@ -1,0 +1,551 @@
+=== Extension-mode run (this branch's mechanism) ===
+ISW AND (2 shares) @ order 1:  coupling secure
+    coupling     : 1 ms
+  total discharges       : 7
+  distinct probe sets    : 4
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 3
+  repeated extensions    : 0
+  successful main probes : 3
+  free wires (sum)       : 2
+  free wires (avg/main)  : 0.666667
+  anf fallbacks          : 0
+
+ISW AND (3 shares) @ order 2:  coupling secure
+    coupling     : 3 ms
+  total discharges       : 34
+  distinct probe sets    : 24
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 10
+  repeated extensions    : 0
+  successful main probes : 10
+  free wires (sum)       : 31
+  free wires (avg/main)  : 3.100000
+  anf fallbacks          : 0
+
+ISW AND (4 shares) @ order 3:  coupling secure
+    coupling     : 38 ms
+  total discharges       : 338
+  distinct probe sets    : 260
+  repeated discharges    : 1  (union 1, chosen 0)
+  distinct extensions    : 75
+  repeated extensions    : 2
+  successful main probes : 77
+  free wires (sum)       : 437
+  free wires (avg/main)  : 5.675325
+  anf fallbacks          : 0
+  extension collisions (2):
+    extension {p01, p03, p11, p13, p21, p23, s21, t01, t03, t13, t23} (2 distinct probes):
+      chosen {p01, s21, p03}  from worklist [1 of {p01, p11, p21, t01, s10, c1m0, c1m1, c1} ; 1 of {s21, c2m1, c2} ; 1 of {p03, p13, p23, t03, t13, t23}]
+      chosen {p01, p03, p13}  from worklist [1 of {p01, p11, p21, t01, s10, s21, c1m0, c1m1, c1, c2m1, c2} ; 2 of {p03, p13, p23, t03, t13, t23}]
+    extension {c0, c0m0, c0m1, c2m0, p00, p02, p03, p10, p12, p13, p20, p22, p23, s20, t02, t03, t12, t13, t23} (2 distinct probes):
+      chosen {p00, p02, p03}  from worklist [1 of {p00, p01, p10, p11, p20, p21, t01, s10, c0m0, c0m1, c0, c1m0, c1m1, c1} ; 1 of {p02, p12, p22, t02, s20, t12, s21, c2m0, c2m1, c2} ; 1 of {p03, p13, p23, t03, t13, t23}]
+      chosen {p00, p03, p13}  from worklist [1 of {p00, p01, p02, p10, p11, p12, p20, p21, p22, t01, s10, t02, s20, t12, s21, c0m0, c0m1, c0, c1m0, c1m1, c1, c2m0, c2m1, c2} ; 2 of {p03, p13, p23, p30, p31, p32, p33, t03, s30, t13, s31, t23, s32, c3m0, c3m1, c3}]
+
+ISW AND (5 shares) @ order 4:  coupling secure
+    coupling     : 923 ms
+  total discharges       : 4735
+  distinct probe sets    : 3787
+  repeated discharges    : 28  (union 28, chosen 0)
+  distinct extensions    : 902
+  repeated extensions    : 18
+  successful main probes : 920
+  free wires (sum)       : 8078
+  free wires (avg/main)  : 8.780435
+  anf fallbacks          : 0
+  extension collisions (16):
+    extension {p01, p04, p11, p14, p21, p24, p31, p34, s21, s31, t01, t04, t14, t24, t34} (3 distinct probes):
+      chosen {p01, s21, s31, p04}  from worklist [1 of {p01, p11, p21, p31, t01, s10, c1m0, c1m1, c1m2, c1} ; 1 of {s21, c2m1, c2m2, c2} ; 1 of {s31, c3m1} ; 1 of {p04, p14, p24, p34, t04, t14, t24, t34}]
+      chosen {p01, s21, p04, p14}  from worklist [1 of {p01, p11, p21, p31, t01, s10, s31, c1m0, c1m1, c1m2, c1, c3m1} ; 1 of {s21, c2m1, c2m2, c2, c3m2, c3} ; 2 of {p04, p14, p24, p34, t04, t14, t24, t34}]
+      chosen {p01, p04, p14, p24}  from worklist [1 of {p01, p11, p21, p31, t01, s10, s21, s31, c1m0, c1m1, c1m2, c1, c2m1, c2m2, c2, c3m1, c3m2, c3} ; 3 of {p04, p14, p24, p34, t04, t14, t24, t34}]
+    extension {c4m0, p01, p10, p13, p31, p44, s40, s43, t01, t13} (2 distinct probes):
+      chosen {p01, p10, p13, p44}  from worklist [1 of {p01, p20, p21, p22, p31, t01, s20, c2m0} ; 1 of {p10, p12, t12} ; 1 of {p13, t13} ; 1 of {p44, s40, s43, c4m0}]
+      chosen {p01, p10, p44, s40}  from worklist [1 of {p01, p20, p21, p23, p31, t01, t23} ; 1 of {p10, p13, t13} ; 2 of {p44, s40, s43, c4m0}]
+    extension {c0, c0m0, c0m1, c0m2, c2m0, c3m0, c4m0, p00, p02, p03, p20, p22, p23, p30, p32, p33, p40, p42, p43, p44, s20, s30, s32, s40, s42, s43, t02, t03, t23} (2 distinct probes):
+      chosen {p00, p02, p40, p44}  from worklist [1 of {p00, p01, p03, p20, p21, p23, p30, p31, p33, t01, t03, s30, t23, c0m0, c0m1, c0m2, c0, c3m0} ; 1 of {p02, p22, p32, t02, s20, s32, c2m0} ; 1 of {p40, p41, p42, p43} ; 1 of {p44, s40, s41, s42, s43, c4m0, c4m1, c4m2, c4}]
+      chosen {p00, p40, p44, s40}  from worklist [1 of {p00, p02, p03, p20, p22, p23, p30, p32, p33, t02, s20, t03, s30, t23, s32, c0m0, c0m1, c0m2, c0, c2m0, c3m0} ; 1 of {p40, p41, p42, p43} ; 2 of {p44, s40, s41, s42, s43, c4m0, c4m1, c4m2, c4}]
+    extension {c0, c0m0, c0m1, c0m2, c1, c1m0, c1m1, c1m2, c4m0, c4m1, p00, p01, p10, p11, p30, p31, p44, s10, s40, s41, s43, t01} (2 distinct probes):
+      chosen {p00, p01, p10, p44}  from worklist [2 of {p00, p01, p02, p20, p21, p22, p30, p31, p32, t01, t02, s20, c0m0, c0m1, c0m2, c0, c2m0} ; 1 of {p10, p11, p12, s10, t12, s21, c1m0, c1m1, c1m2, c1, c2m1, c2m2, c2} ; 1 of {p44, s40, s41, s42, s43, c4m0, c4m1, c4m2, c4}]
+      chosen {p00, p10, p11, p44}  from worklist [1 of {p00, p01, p02, p20, p21, p22, p30, p31, p32, t01, t02, s20, c0m0, c0m1, c0m2, c0, c2m0} ; 2 of {p10, p11, p12, s10, t12, s21, c1m0, c1m1, c1m2, c1, c2m1, c2m2, c2} ; 1 of {p44, s40, s41, s42, s43, c4m0, c4m1, c4m2, c4}]
+    extension {p02, p04, p12, p14, p22, p24, p32, p34, s21, s32, t02, t04, t12, t14, t24, t34} (2 distinct probes):
+      chosen {p02, p12, s32, p04}  from worklist [2 of {p02, p12, p22, p32, t02, s20, t12, s21, c2m0, c2m1, c2m2, c2} ; 1 of {s32, c3m2, c3} ; 1 of {p04, p14, p24, p34, t04, t14, t24, t34}]
+      chosen {p02, p12, p04, p14}  from worklist [2 of {p02, p12, p22, p32, t02, s20, t12, s21, s32, c2m0, c2m1, c2m2, c2, c3m2, c3} ; 2 of {p04, p14, p24, p34, t04, t14, t24, t34}]
+    extension {c0, c0m0, c0m1, c0m2, c1, c1m0, c1m1, c1m2, c3m0, c3m1, p00, p01, p03, p04, p10, p11, p13, p14, p20, p21, p23, p24, p30, p31, p33, p34, s10, s30, s31, t01, t03, t04, t13, t14, t23, t24, t34} (2 distinct probes):
+      chosen {p00, p01, p03, p04}  from worklist [2 of {p00, p01, p02, p10, p11, p12, p20, p21, p22, p30, p31, p32, t01, s10, t02, s20, t12, s21, c0m0, c0m1, c0m2, c0, c1m0, c1m1, c1m2, c1, c2m0, c2m1, c2m2, c2} ; 1 of {p03, p13, p23, p33, t03, s30, t13, s31, t23, s32, c3m0, c3m1, c3m2, c3} ; 1 of {p04, p14, p24, p34, t04, t14, t24, t34}]
+      chosen {p00, p01, p04, p14}  from worklist [2 of {p00, p01, p02, p03, p10, p11, p12, p13, p20, p21, p22, p23, p30, p31, p32, p33, t01, s10, t02, s20, t03, s30, t12, s21, t13, s31, t23, s32, c0m0, c0m1, c0m2, c0, c1m0, c1m1, c1m2, c1, c2m0, c2m1, c2m2, c2, c3m0, c3m1, c3m2, c3} ; 2 of {p04, p14, p24, p34, p40, p41, p42, p43, p44, t04, s40, t14, s41, t24, s42, t34, s43, c4m0, c4m1, c4m2, c4}]
+    extension {c4m0, p01, p21, p31, p40, p41, p43, p44, s40, s43, t01} (2 distinct probes):
+      chosen {p01, p40, p41, p44}  from worklist [1 of {p01, p21, p31, t01} ; 2 of {p40, p41, p42, p43} ; 1 of {p44, s40, s41, s42, s43, c4m0, c4m1, c4m2, c4}]
+      chosen {p01, p40, p44, s40}  from worklist [1 of {p01, p21, p31, t01} ; 1 of {p40, p41, p42, p43} ; 2 of {p44, s40, s41, s42, s43, c4m0, c4m1, c4m2, c4}]
+    extension {c2, c2m0, c2m1, c2m2, p02, p04, p12, p14, p22, p24, p32, p34, s20, s21, s32, t04, t12, t14, t24, t34} (2 distinct probes):
+      chosen {p02, s20, s32, p04}  from worklist [1 of {p02, p12, p22, p32, t02, t12, s21} ; 1 of {s20, c2m0, c2m1, c2m2, c2} ; 1 of {s32} ; 1 of {p04, p14, p24, p34, t04, t14, t24, t34}]
+      chosen {p02, s20, p04, p14}  from worklist [1 of {p02, p12, p22, p32, t02, t12, s21, s32} ; 1 of {s20, c2m0, c2m1, c2m2, c2, c3m2, c3} ; 2 of {p04, p14, p24, p34, t04, t14, t24, t34}]
+    extension {c4m0, p04, p24, p34, p40, p42, p43, p44, s40, s42, s43, t04, t24, t34} (2 distinct probes):
+      chosen {p04, p24, p40, p42}  from worklist [1 of {p04, p14, p34, t04, t14, t34} ; 1 of {p24, t24} ; 1 of {p40, p41, p43, p44, s40, s41, s43, c4m0, c4m1} ; 1 of {p42, s42, c4m2, c4}]
+      chosen {p04, p40, p42, p43}  from worklist [1 of {p04, p24, p34, t04, t24, t34} ; 1 of {p40, p41, p44, s40, c4m0} ; 1 of {p42, s42} ; 1 of {p43, s43}]
+    extension {c0, c0m0, c0m1, c0m2, c1, c1m0, c1m1, c1m2, p00, p01, p02, p10, p11, p12, p30, p31, p32, p40, p41, p42, p43, s10, t01, t02, t12} (2 distinct probes):
+      chosen {p00, p01, p10, p40}  from worklist [2 of {p00, p01, p02, p20, p21, p22, p30, p31, p32, t01, t02, s20, c0m0, c0m1, c0m2, c0, c2m0} ; 1 of {p10, p11, p12, s10, t12, s21, c1m0, c1m1, c1m2, c1, c2m1, c2m2, c2} ; 1 of {p40, p41, p42, p43}]
+      chosen {p00, p10, p11, p40}  from worklist [1 of {p00, p01, p02, p20, p21, p22, p30, p31, p32, t01, t02, s20, c0m0, c0m1, c0m2, c0, c2m0} ; 2 of {p10, p11, p12, s10, t12, s21, c1m0, c1m1, c1m2, c1, c2m1, c2m2, c2} ; 1 of {p40, p41, p42, p43}]
+    extension {c2m0, c2m1, c2m2, p02, p12, p20, p21, p22, p32, s20, s21, s42, t02, t12} (2 distinct probes):
+      chosen {p02, p20, p12, s42}  from worklist [2 of {p02, p20, p21, p22, p32, t02, s20, c2m0} ; 1 of {p12, t12, s21, c2m1, c2m2, c2} ; 1 of {s42, c4m2, c4}]
+      chosen {p02, p12, t12, s42}  from worklist [1 of {p02, p20, p21, p22, p32, t02, s20, c2m0} ; 2 of {p12, t12, s21, c2m1, c2m2, c2} ; 1 of {s42, c4m2, c4}]
+    extension {p02, p04, p12, p14, p32, p34, s42, t02, t04, t12, t14, t34} (2 distinct probes):
+      chosen {p02, p12, p04, s42}  from worklist [2 of {p02, p12, p32, t02, t12} ; 1 of {p04, p14, p34, t04, t14, t34} ; 1 of {s42, c4m1, c4m2, c4}]
+      chosen {p02, p04, p14, s42}  from worklist [1 of {p02, p12, p32, t02, t12} ; 2 of {p04, p14, p34, t04, t14, t34} ; 1 of {s42, c4m2, c4}]
+    extension {c0, c0m0, c0m1, c0m2, c2m0, c3m0, p00, p01, p02, p03, p20, p21, p22, p23, p30, p31, p32, p33, p40, p41, p42, p43, s20, s30, s32, t01, t02, t03, t23} (2 distinct probes):
+      chosen {p00, p01, p03, p40}  from worklist [2 of {p00, p01, p02, p10, p11, p12, p20, p21, p22, p30, p31, p32, t01, s10, t02, s20, t12, s21, c0m0, c0m1, c0m2, c0, c1m0, c1m1, c1m2, c1, c2m0, c2m1, c2m2, c2} ; 1 of {p03, p13, p23, p33, t03, s30, t13, s31, t23, s32, c3m0, c3m1, c3m2, c3} ; 1 of {p40, p41, p42, p43, p44, s40, s41, s42, s43, c4m0, c4m1, c4m2, c4}]
+      chosen {p00, p02, p40, p41}  from worklist [1 of {p00, p01, p03, p10, p11, p13, p20, p21, p23, p30, p31, p33, t01, s10, t03, s30, t13, s31, t23, c0m0, c0m1, c0m2, c0, c1m0, c1m1, c1m2, c1, c3m0, c3m1} ; 1 of {p02, p12, p22, p32, t02, s20, t12, s21, s32, c2m0, c2m1, c2m2, c2, c3m2, c3} ; 2 of {p40, p41, p42, p43, p44, s40, s41, s42, s43, c4m0, c4m1, c4m2, c4}]
+    extension {c0, c0m0, c0m1, c0m2, c2m1, c2m2, p00, p01, p12, p30, p31, s21, s42, t01, t12} (2 distinct probes):
+      chosen {p00, p01, p12, s42}  from worklist [2 of {p00, p01, p30, p31, t01, c0m0, c0m1, c0m2, c0} ; 1 of {p12, t12, s21, c2m1, c2m2, c2} ; 1 of {s42, c4m2, c4}]
+      chosen {p00, p12, t12, s42}  from worklist [1 of {p00, p01, p30, p31, t01, c0m0, c0m1, c0m2, c0} ; 2 of {p12, t12, s21, c2m1, c2m2, c2} ; 1 of {s42, c4m2, c4}]
+    extension {c3m0, p03, p04, p13, p14, p23, p24, p33, p34, s30, s32, t03, t04, t13, t14, t23, t24, t34} (2 distinct probes):
+      chosen {p03, t03, s30, p04}  from worklist [1 of {p03, p13, p23, p33, t13, s31, t23, s32} ; 1 of {t03} ; 1 of {s30, c3m0, c3m1, c3m2, c3} ; 1 of {p04, p14, p24, p34, t04, t14, t24, t34}]
+      chosen {p03, s30, c3m0, p04}  from worklist [1 of {p03, p13, p23, p33, t03, t13, s31, t23, s32} ; 2 of {s30, c3m0, c3m1, c3m2, c3} ; 1 of {p04, p14, p24, p34, t04, t14, t24, t34}]
+    extension {c0, c0m0, c0m1, c0m2, c2m0, c3m0, p00, p02, p03, p04, p10, p12, p13, p14, p20, p22, p23, p24, p30, p32, p33, p34, s20, s30, s32, t02, t03, t04, t12, t13, t14, t23, t24, t34} (3 distinct probes):
+      chosen {p00, p03, p13, p04}  from worklist [1 of {p00, p01, p02, p10, p11, p12, p20, p21, p22, p30, p31, p32, t01, s10, t02, s20, t12, s21, c0m0, c0m1, c0m2, c0, c1m0, c1m1, c1m2, c1, c2m0, c2m1, c2m2, c2} ; 2 of {p03, p13, p23, p33, t03, s30, t13, s31, t23, s32, c3m0, c3m1, c3m2, c3} ; 1 of {p04, p14, p24, p34, t04, t14, t24, t34}]
+      chosen {p00, p02, p04, p14}  from worklist [1 of {p00, p01, p03, p10, p11, p13, p20, p21, p23, p30, p31, p33, t01, s10, t03, s30, t13, s31, t23, c0m0, c0m1, c0m2, c0, c1m0, c1m1, c1m2, c1, c3m0, c3m1} ; 1 of {p02, p12, p22, p32, t02, s20, t12, s21, s32, c2m0, c2m1, c2m2, c2, c3m2, c3} ; 2 of {p04, p14, p24, p34, t04, t14, t24, t34}]
+      chosen {p00, p04, p14, p24}  from worklist [1 of {p00, p01, p02, p03, p10, p11, p12, p13, p20, p21, p22, p23, p30, p31, p32, p33, t01, s10, t02, s20, t03, s30, t12, s21, t13, s31, t23, s32, c0m0, c0m1, c0m2, c0, c1m0, c1m1, c1m2, c1, c2m0, c2m1, c2m2, c2, c3m0, c3m1, c3m2, c3} ; 3 of {p04, p14, p24, p34, p40, p41, p42, p43, p44, t04, s40, t14, s41, t24, s42, t34, s43, c4m0, c4m1, c4m2, c4}]
+
+DOM AND (2 shares) @ order 1:  coupling secure
+    coupling     : 0 ms
+  total discharges       : 11
+  distinct probe sets    : 6
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 5
+  repeated extensions    : 0
+  successful main probes : 5
+  free wires (sum)       : 2
+  free wires (avg/main)  : 0.400000
+  anf fallbacks          : 0
+
+DOM AND (2 shares) o2 @ order 2:  coupling INSECURE
+    coupling     : 0 ms
+  total discharges       : 2
+  distinct probe sets    : 1
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 0
+  repeated extensions    : 0
+  successful main probes : 0
+  free wires (sum)       : 0
+  free wires (avg/main)  : 0.000000
+  anf fallbacks          : 0
+
+DOM AND (3 shares) @ order 2:  coupling secure
+    coupling     : 5 ms
+  total discharges       : 88
+  distinct probe sets    : 59
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 29
+  repeated extensions    : 0
+  successful main probes : 29
+  free wires (sum)       : 44
+  free wires (avg/main)  : 1.517241
+  anf fallbacks          : 0
+
+DOM AND (4 shares) @ order 3:  coupling secure
+    coupling     : 89 ms
+  total discharges       : 859
+  distinct probe sets    : 639
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 220
+  repeated extensions    : 0
+  successful main probes : 220
+  free wires (sum)       : 784
+  free wires (avg/main)  : 3.563636
+  anf fallbacks          : 0
+
+Trichina AND @ order 1:  coupling secure
+    coupling     : 0 ms
+  total discharges       : 11
+  distinct probe sets    : 6
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 5
+  repeated extensions    : 0
+  successful main probes : 5
+  free wires (sum)       : 2
+  free wires (avg/main)  : 0.400000
+  anf fallbacks          : 0
+
+Trichina AND (bad assoc) @ order 1:  coupling INSECURE
+    coupling     : 1 ms
+  total discharges       : 10
+  distinct probe sets    : 5
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 4
+  repeated extensions    : 0
+  successful main probes : 4
+  free wires (sum)       : 1
+  free wires (avg/main)  : 0.250000
+  anf fallbacks          : 0
+
+TI AND (3 shares) @ order 1:  coupling secure
+    coupling     : 0 ms
+  total discharges       : 9
+  distinct probe sets    : 5
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 4
+  repeated extensions    : 0
+  successful main probes : 4
+  free wires (sum)       : 9
+  free wires (avg/main)  : 2.250000
+  anf fallbacks          : 0
+
+TI AND (3 shares) o2 @ order 2:  coupling INSECURE
+    coupling     : 1 ms
+  total discharges       : 10
+  distinct probe sets    : 5
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 4
+  repeated extensions    : 0
+  successful main probes : 4
+  free wires (sum)       : 5
+  free wires (avg/main)  : 1.250000
+  anf fallbacks          : 0
+
+Additive refresh (3 shares) @ order 2:  coupling secure
+    coupling     : 0 ms
+  total discharges       : 6
+  distinct probe sets    : 4
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 2
+  repeated extensions    : 0
+  successful main probes : 2
+  free wires (sum)       : 1
+  free wires (avg/main)  : 0.500000
+  anf fallbacks          : 0
+
+Additive refresh (4 shares) @ order 3:  coupling secure
+    coupling     : 0 ms
+  total discharges       : 11
+  distinct probe sets    : 7
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 3
+  repeated extensions    : 1
+  successful main probes : 4
+  free wires (sum)       : 6
+  free wires (avg/main)  : 1.500000
+  anf fallbacks          : 0
+  extension collisions (1):
+    extension {y0, y0m0, y0m1, y1, y2} (2 distinct probes):
+      chosen {y1, y2, y0m0}  from worklist [2 of {y1, y2, y3} ; 1 of {y0m0, y0m1, y0}]
+      chosen {y1, y0m0, y0m1}  from worklist [1 of {y1, y2, y3} ; 2 of {y0m0, y0m1, y0}]
+
+ISW refresh (3 shares) @ order 2:  coupling secure
+    coupling     : 0 ms
+  total discharges       : 6
+  distinct probe sets    : 4
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 2
+  repeated extensions    : 0
+  successful main probes : 2
+  free wires (sum)       : 4
+  free wires (avg/main)  : 2.000000
+  anf fallbacks          : 0
+
+ISW refresh (4 shares) @ order 3:  coupling secure
+    coupling     : 1 ms
+  total discharges       : 12
+  distinct probe sets    : 7
+  repeated discharges    : 1  (union 1, chosen 0)
+  distinct extensions    : 3
+  repeated extensions    : 1
+  successful main probes : 4
+  free wires (sum)       : 24
+  free wires (avg/main)  : 6.000000
+  anf fallbacks          : 0
+  extension collisions (1):
+    extension {y0, y0m0, y0m1, y2, y2m0, y2m1, y3, y3m0, y3m1} (2 distinct probes):
+      chosen {y0m0, y0m1, y3m0}  from worklist [2 of {y0m0, y0m1, y0, y1m0, y1m1, y1, y2m0, y2m1, y2} ; 1 of {y3m0, y3m1, y3}]
+      chosen {y0m0, y3m0, y3m1}  from worklist [1 of {y0m0, y0m1, y0, y1m0, y1m1, y1, y2m0, y2m1, y2} ; 2 of {y3m0, y3m1, y3}]
+
+DOM Keccak χ (2 shares) @ order 1:  coupling secure
+    coupling     : 11 ms
+  total discharges       : 49
+  distinct probe sets    : 25
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 24
+  repeated extensions    : 0
+  successful main probes : 24
+  free wires (sum)       : 29
+  free wires (avg/main)  : 1.208333
+  anf fallbacks          : 0
+
+DOM Keccak χ (3 shares) @ order 2:  coupling secure
+    coupling     : 2617 ms
+  total discharges       : 2865
+  distinct probe sets    : 1508
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 1357
+  repeated extensions    : 0
+  successful main probes : 1357
+  free wires (sum)       : 2671
+  free wires (avg/main)  : 1.968312
+  anf fallbacks          : 0
+
+TI Keccak χ (3 shares) @ order 1:  coupling secure
+    coupling     : 16 ms
+  total discharges       : 43
+  distinct probe sets    : 22
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 21
+  repeated extensions    : 0
+  successful main probes : 21
+  free wires (sum)       : 68
+  free wires (avg/main)  : 3.238095
+  anf fallbacks          : 0
+
+TI Keccak χ (3 shares) o2 @ order 2:  coupling INSECURE
+    coupling     : 15 ms
+  total discharges       : 57
+  distinct probe sets    : 31
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 25
+  repeated extensions    : 0
+  successful main probes : 25
+  free wires (sum)       : 92
+  free wires (avg/main)  : 3.680000
+  anf fallbacks          : 0
+
+Q⁴₁₂ (2-share direct) @ order 1:  coupling secure
+    coupling     : 2 ms
+  total discharges       : 28
+  distinct probe sets    : 14
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 14
+  repeated extensions    : 0
+  successful main probes : 14
+  free wires (sum)       : 16
+  free wires (avg/main)  : 1.142857
+  anf fallbacks          : 0
+
+Q⁴₁₂ TI (3 shares) @ order 1:  coupling secure
+    coupling     : 4 ms
+  total discharges       : 25
+  distinct probe sets    : 13
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 12
+  repeated extensions    : 0
+  successful main probes : 12
+  free wires (sum)       : 30
+  free wires (avg/main)  : 2.500000
+  anf fallbacks          : 0
+
+TI Fides AB1 (4 shares) @ order 1:  coupling secure
+    coupling     : 893 ms
+  total discharges       : 55
+  distinct probe sets    : 28
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 27
+  repeated extensions    : 0
+  successful main probes : 27
+  free wires (sum)       : 537
+  free wires (avg/main)  : 19.888889
+  anf fallbacks          : 0
+
+x+yz TI direct (3 shares) @ order 1:  coupling secure
+    coupling     : 1 ms
+  total discharges       : 7
+  distinct probe sets    : 4
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 3
+  repeated extensions    : 0
+  successful main probes : 3
+  free wires (sum)       : 10
+  free wires (avg/main)  : 3.333333
+  anf fallbacks          : 0
+
+x+yz TI with CT (3 shares) @ order 1:  coupling secure
+    coupling     : 1 ms
+  total discharges       : 11
+  distinct probe sets    : 6
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 5
+  repeated extensions    : 0
+  successful main probes : 5
+  free wires (sum)       : 9
+  free wires (avg/main)  : 1.800000
+  anf fallbacks          : 0
+
+x+yz TI (4 shares) @ order 2:  coupling secure
+    coupling     : 8 ms
+  total discharges       : 78
+  distinct probe sets    : 49
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 29
+  repeated extensions    : 0
+  successful main probes : 29
+  free wires (sum)       : 115
+  free wires (avg/main)  : 3.965517
+  anf fallbacks          : 0
+
+x+yz TI (4 shares) o3 @ order 3:  coupling INSECURE
+    coupling     : 8 ms
+  total discharges       : 102
+  distinct probe sets    : 69
+  repeated discharges    : 4  (union 4, chosen 0)
+  distinct extensions    : 27
+  repeated extensions    : 1
+  successful main probes : 28
+  free wires (sum)       : 99
+  free wires (avg/main)  : 3.535714
+  anf fallbacks          : 0
+  extension collisions (1):
+    extension {y2z1, y3z1, y4z1, y4z2, y4z3} (2 distinct probes):
+      chosen {y4z2, y4z3, y3z1}  from worklist [2 of {y4z2, y4z3, y4z4, F1m6, F1m7, F1} ; 1 of {y3z1, y4z1, y1z1, y2z1, F2m2, F2m3, F2, F3m0, F3}]
+      chosen {y4z2, y3z1, y4z1}  from worklist [1 of {y4z2, y4z3, y4z4, F1m6, F1m7, F1} ; 2 of {y3z1, y4z1, y1z1, y2z1, F2m2, F2m3, F2, F3m0, F3}]
+
+x+yz+xyz TI (4 shares) @ order 1:  coupling secure
+    coupling     : 18 ms
+  total discharges       : 31
+  distinct probe sets    : 16
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 15
+  repeated extensions    : 0
+  successful main probes : 15
+  free wires (sum)       : 63
+  free wires (avg/main)  : 4.200000
+  anf fallbacks          : 0
+
+xy TI virtual variable @ order 1:  coupling secure
+    coupling     : 0 ms
+  total discharges       : 9
+  distinct probe sets    : 5
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 4
+  repeated extensions    : 0
+  successful main probes : 4
+  free wires (sum)       : 23
+  free wires (avg/main)  : 5.750000
+  anf fallbacks          : 0
+
+xy TI virtual share @ order 1:  coupling secure
+    coupling     : 1 ms
+  total discharges       : 9
+  distinct probe sets    : 5
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 4
+  repeated extensions    : 0
+  successful main probes : 4
+  free wires (sum)       : 15
+  free wires (avg/main)  : 3.750000
+  anf fallbacks          : 0
+
+xy TI 4to3 shares @ order 1:  coupling secure
+    coupling     : 1 ms
+  total discharges       : 11
+  distinct probe sets    : 6
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 5
+  repeated extensions    : 0
+  successful main probes : 5
+  free wires (sum)       : 8
+  free wires (avg/main)  : 1.600000
+  anf fallbacks          : 0
+
+Q31 d+1 @ order 1:  coupling secure
+    coupling     : 0 ms
+  total discharges       : 13
+  distinct probe sets    : 7
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 6
+  repeated extensions    : 0
+  successful main probes : 6
+  free wires (sum)       : 11
+  free wires (avg/main)  : 1.833333
+  anf fallbacks          : 0
+
+Q32 d+1 @ order 1:  coupling secure
+    coupling     : 2 ms
+  total discharges       : 26
+  distinct probe sets    : 13
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 13
+  repeated extensions    : 0
+  successful main probes : 13
+  free wires (sum)       : 13
+  free wires (avg/main)  : 1.000000
+  anf fallbacks          : 0
+
+Q33 d+1 @ order 1:  coupling INSECURE
+    coupling     : 1 ms
+  total discharges       : 18
+  distinct probe sets    : 9
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 8
+  repeated extensions    : 0
+  successful main probes : 8
+  free wires (sum)       : 22
+  free wires (avg/main)  : 2.750000
+  anf fallbacks          : 0
+
+Q44 d+1 @ order 1:  coupling secure
+    coupling     : 1 ms
+  total discharges       : 15
+  distinct probe sets    : 8
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 7
+  repeated extensions    : 0
+  successful main probes : 7
+  free wires (sum)       : 14
+  free wires (avg/main)  : 2.000000
+  anf fallbacks          : 0
+
+Q412 d+1 @ order 1:  coupling secure
+    coupling     : 1 ms
+  total discharges       : 27
+  distinct probe sets    : 14
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 13
+  repeated extensions    : 0
+  successful main probes : 13
+  free wires (sum)       : 15
+  free wires (avg/main)  : 1.153846
+  anf fallbacks          : 0
+
+Q4293 d+1 @ order 1:  coupling secure
+    coupling     : 2 ms
+  total discharges       : 31
+  distinct probe sets    : 16
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 15
+  repeated extensions    : 0
+  successful main probes : 15
+  free wires (sum)       : 20
+  free wires (avg/main)  : 1.333333
+  anf fallbacks          : 0
+
+Q4294 d+1 @ order 1:  coupling secure
+    coupling     : 2 ms
+  total discharges       : 23
+  distinct probe sets    : 12
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 11
+  repeated extensions    : 0
+  successful main probes : 11
+  free wires (sum)       : 16
+  free wires (avg/main)  : 1.454545
+  anf fallbacks          : 0
+
+Q4299 d+1 @ order 1:  coupling secure
+    coupling     : 3 ms
+  total discharges       : 36
+  distinct probe sets    : 18
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 18
+  repeated extensions    : 0
+  successful main probes : 18
+  free wires (sum)       : 26
+  free wires (avg/main)  : 1.444444
+  anf fallbacks          : 0
+
+Q4300 d+1 @ order 1:  coupling INSECURE
+    coupling     : 2 ms
+  total discharges       : 18
+  distinct probe sets    : 9
+  repeated discharges    : 0  (union 0, chosen 0)
+  distinct extensions    : 8
+  repeated extensions    : 0
+  successful main probes : 8
+  free wires (sum)       : 24
+  free wires (avg/main)  : 3.000000
+  anf fallbacks          : 0
+
